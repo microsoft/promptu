@@ -1,0 +1,103 @@
+{
+  "name": "promptu",
+  "displayName": "promptu",
+  "description": "Create shareable, clickable links that run AI prompts from anywhere directly in VSCode's Github Copilot Chat",
+  "version": "2.0.2",
+  "icon": "promptu.png",
+  "publisher": "ms-promptu",
+  "engines": {
+    "vscode": "^1.103.0"
+  },
+  "categories": [
+    "AI",
+    "Chat",
+    "Machine Learning"
+  ],
+  "keywords": [
+    "prompt",
+    "copilot",
+    "prompt-execution",
+    "uri",
+    "github-copilot",
+    "link",
+    "button",
+    "share",
+    "ai"
+  ],
+  "bugs": {
+    "url": "https://github.com/microsoft/promptu/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/microsoft/promptu"
+  },
+  "homepage": "https://github.com/microsoft/promptu/blob/main/README.md",
+  "license": "MIT",
+  "activationEvents": [
+    "onUri"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "promptu.executePrompt",
+        "title": "Execute Prompt",
+        "category": "promptu"
+      },
+      {
+        "command": "promptu.setCopilotChatCommand",
+        "title": "Set Copilot Chat Command",
+        "category": "promptu"
+      },
+      {
+        "command": "promptu.discoverChatCommands",
+        "title": "Discover Available Chat Commands",
+        "category": "promptu"
+      },
+      {
+        "command": "promptu.listMcpPrompts",
+        "title": "List MCP Prompts",
+        "category": "promptu"
+      }
+    ],
+    "configuration": {
+      "title": "promptu",
+      "properties": {
+        "promptu.copilotChatCommand": {
+          "type": "string",
+          "default": "workbench.action.chat.openagent",
+          "description": "The Copilot Chat command to execute. This can be updated to use a different command if desired."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "node esbuild.js",
+    "package": "node esbuild.js --production",
+    "watch": "node esbuild.js --watch",
+    "pretest": "npm run compile && npm run lint && npx tsc -p . --outDir out",
+    "lint": "eslint src --ext ts",
+    "test": "vscode-test",
+    "vsce:package": "vsce package",
+    "publish": "vsce publish"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.0",
+    "@types/node": "16.x",
+    "@types/vscode": "^1.103.0",
+    "@typescript-eslint/eslint-plugin": "^5.45.0",
+    "@typescript-eslint/parser": "^5.45.0",
+    "@vscode/test-cli": "^0.0.4",
+    "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^2.19.0",
+    "esbuild": "^0.25.10",
+    "eslint": "^8.28.0",
+    "mocha": "^10.2.0",
+    "typescript": "^4.9.4"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.18.1",
+    "node-fetch": "^3.3.0"
+  }
+}
