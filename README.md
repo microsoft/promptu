@@ -6,7 +6,7 @@ Create shareable, clickable links that run AI prompts from anywhere directly in 
 
 - **🔗 Prompts In A Click**: Transform any prompt into a shareable, clickable link
 - **🌐 Universal Prompt Access**: Support for Azure DevOps, GitHub, direct URLs, local files, and MCP prompts
-- **🔗 GitHub Copilot Integration**: Executes prompts directly in Copilot Chat
+- **💬 GitHub Copilot Integration**: Executes prompts directly in Copilot Chat
 - **🛠️ MCP Server Support**: Specify Model Context Protocol servers to install for prompts
 
 ## URI Format

@@ -43,7 +43,7 @@ body:
     attributes:
       label: Version
       description: What version of promptu are you running?
-      placeholder: ex. 1.2025.921004
+      placeholder: ex. 2.0.1
     validations:
       required: true
   - type: dropdown
