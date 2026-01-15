@@ -37,6 +37,8 @@ async function main() {
     sourcesContent: false,
     platform: 'node',
     outdir: 'dist',
+    // Prefer ESM modules to avoid UMD bundling issues (e.g., jsonc-parser)
+    mainFields: ['module', 'main'],
     external: [
       'vscode',
       // Node.js built-in modules used by the extension

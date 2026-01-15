@@ -2,6 +2,8 @@
 
 Create shareable, clickable links that run AI prompts from anywhere directly in VSCode's Github Copilot Chat.
 
+Try now! [![Run in VS Code](https://img.shields.io/badge/VS_Code_%7C_promptu-Welcome-0098FF?style=flat-square&logo=githubcopilot&logoColor=white)](https://vscode.dev/redirect?url=vscode://ms-promptu.promptu?prompt=https://raw.githubusercontent.com/microsoft/promptu/refs/heads/main/.github/prompts/welcome.prompt.md&windowId=_blank) [![Run in VS Code](https://img.shields.io/badge/VS_Code_Insiders_%7C_promptu-Welcome-24bfa5?style=flat-square&logo=githubcopilot&logoColor=white)](https://vscode.dev/redirect?url=vscode-insiders://ms-promptu.promptu?prompt=https://raw.githubusercontent.com/microsoft/promptu/refs/heads/main/.github/prompts/welcome.prompt.md&windowId=_blank)
+
 ## Features
 
 - **🔗 Prompts In A Click**: Transform any prompt into a shareable, clickable link
@@ -50,11 +52,11 @@ Or create clickable links by prepending `https://vscode.dev/redirect?url=`
 
 Ex: https://vscode.dev/redirect?url=vscode://ms-promptu.promptu?prompt=gh:github/awesome-copilot/prompts/prompt-builder
 
-Or create buttons, ex: 
+Or create buttons, ex:
 
 [![Run in VS Code](https://img.shields.io/badge/VS_Code_%7C_promptu-Prompt_Name-0098FF?style=flat-square&logo=githubcopilot&logoColor=white)](https://vscode.dev/redirect?url=vscode://ms-promptu.promptu?prompt=gh:github/awesome-copilot/prompts/prompt-builder) 
 
-[![Run in VS Code](https://img.shields.io/badge/VS_Code_Insiders_%7C_promptu-Prompt_Name-24bfa5?style=flat-square&logo=githubcopilot&logoColor=white)](https://vscode.dev/redirect?url=vscode://ms-promptu.promptu?prompt=gh:github/awesome-copilot/prompts/prompt-builder)
+[![Run in VS Code](https://img.shields.io/badge/VS_Code_Insiders_%7C_promptu-Prompt_Name-24bfa5?style=flat-square&logo=githubcopilot&logoColor=white)](https://vscode.dev/redirect?url=vscode-insiders://ms-promptu.promptu?prompt=gh:github/awesome-copilot/prompts/prompt-builder)
 
 Or use platform-specific shortcuts
 - **Windows**: `Win+R` → paste URI → Enter

@@ -198,7 +198,7 @@ async function executePromptLogic(
         let mcpServers: McpServerConfig[] = [];
         if (mcp) {
             try {
-                mcpServers = McpInstaller.parseMcpParameter(mcp);
+                mcpServers = mcpInstaller.parseMcpParameter(mcp);
             } catch (error) {
                 throw new Error(`MCP parameter parsing failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
             }

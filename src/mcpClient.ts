@@ -246,7 +246,7 @@ export class McpClient {
             throw new Error(`Failed to list prompts from MCP server '${serverConfig.name}': ${message}`);
         } finally {
             try {
-                client.close();
+                await client.close();
                 this.outputChannel.appendLine(`promptu: Closed connection to MCP server '${serverConfig.name}'`);
             } catch (closeError) {
                 this.outputChannel.appendLine(`promptu: Error closing MCP client '${serverConfig.name}': ${closeError instanceof Error ? closeError.message : 'Unknown error'}`);

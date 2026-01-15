@@ -10,11 +10,10 @@ module.exports = {
     ],
     rules: {
         '@typescript-eslint/naming-convention': 'warn',
-        '@typescript-eslint/semi': 'warn',
         curly: 'warn',
         eqeqeq: 'warn',
         'no-throw-literal': 'warn',
-        semi: 'off',
+        semi: 'warn',
     },
     ignorePatterns: [
         'out',
