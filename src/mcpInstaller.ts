@@ -4,6 +4,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { spawn } from 'child_process';
+import * as jsonc from 'jsonc-parser';
 import { McpServerConfig, McpConfiguration } from './types';
 import { showMcpInstallationConfirmation } from './userDialogs';
 
@@ -62,7 +63,7 @@ export class McpInstaller {
      * @returns Promise<boolean> - true if all servers installed, false if user cancelled
      */
     async installServers(servers: McpServerConfig[]): Promise<boolean> {
-        this.outputChannel.appendLine(`promptu: Installing ${servers.length} MCP server(s)...`);
+        this.outputChannel.appendLine(`promptu: Installing ${servers.length} MCP server(s)`);
 
         // Read mcp config, create a new one if it doesn't exist.
         let config = await this.readMcpConfig() || { servers: {}, inputs: [] };
@@ -114,16 +115,44 @@ export class McpInstaller {
 
         this.outputChannel.appendLine(`promptu: Installing NuGet package '${server.nugetPackage}' and '${server.version}'...`);
 
-        // Check if package already meets requirements (only if version specified)
-        if (server.version) {
-            const installedVersion = await this.getNuGetPackageVersion(server.nugetPackage);
-            if (installedVersion && this.isVersionSufficient(installedVersion, server.version)) {
-                this.outputChannel.appendLine(`promptu: NuGet package '${server.nugetPackage}' already installed with sufficient version (${installedVersion})`);
-                return { cancelled: false, configModified: false };
+        // Check if server is already configured in mcp.json
+        const isConfigured = config !== null && server.name in config.servers;
+        if (isConfigured) {
+            this.outputChannel.appendLine(`promptu: Server '${server.name}' already configured in mcp.json`);
+        }
+
+        // Check if package is already installed
+        let isNuGetInstalled = false;
+        const installedVersion = await this.getNuGetPackageVersion(server.nugetPackage);
+        if (installedVersion) {
+            if (server.version) {
+                if (this.isVersionSufficient(installedVersion, server.version)) {
+                    this.outputChannel.appendLine(`promptu: NuGet package '${server.nugetPackage}' already installed with sufficient version (${installedVersion})`);
+                    isNuGetInstalled = true;
+                } else {
+                    this.outputChannel.appendLine(`promptu: NuGet package '${server.nugetPackage}' version ${installedVersion} insufficient (need ${server.version})`);
+                }
+            } else {
+                // No version specified - any installed version is sufficient
+                this.outputChannel.appendLine(`promptu: NuGet package '${server.nugetPackage}' already installed (version ${installedVersion})`);
+                isNuGetInstalled = true;
             }
-            if (installedVersion) {
-                this.outputChannel.appendLine(`promptu: NuGet package '${server.nugetPackage}' version ${installedVersion} insufficient (need ${server.version})`);
+        }
+
+        // If both NuGet package is installed and config exists, nothing to do
+        if (isNuGetInstalled && isConfigured) {
+            return { cancelled: false, configModified: false };
+        }
+
+        // If NuGet is installed but config is missing, prompt before adding to config
+        if (isNuGetInstalled && !isConfigured) {
+            const shouldConfigure = await showMcpInstallationConfirmation(server);
+            if (!shouldConfigure) {
+                return { cancelled: true, configModified: false };
             }
+            this.outputChannel.appendLine(`promptu: NuGet package already installed, adding server '${server.name}' to mcp.json`);
+            this.addServerToConfig(config, server);
+            return { cancelled: false, configModified: true };
         }
 
         // Ask user for permission with detailed information
@@ -247,13 +276,73 @@ export class McpInstaller {
         try {
             const fileData = await vscode.workspace.fs.readFile(configUri);
             const content = Buffer.from(fileData).toString('utf8');
-            return JSON.parse(content);
+            
+            // Use jsonc-parser which tolerates trailing commas and comments
+            const errors: jsonc.ParseError[] = [];
+            const parsed = jsonc.parse(content, errors, { allowTrailingComma: true });
+            
+            // Check for parse errors
+            if (errors.length > 0) {
+                const firstError = errors[0];
+                const position = this.getLineAndColumn(content, firstError.offset);
+                const errorType = jsonc.printParseErrorCode(firstError.error);
+                
+                // Show user-friendly error with option to open file
+                const openFile = 'Open mcp.json';
+                const message = `Your mcp.json has a syntax error on line ${position.line}, column ${position.column}: ${errorType}`;
+                
+                this.outputChannel.appendLine(`promptu: ${message}`);
+                
+                vscode.window.showErrorMessage(message, openFile).then(selection => {
+                    if (selection === openFile) {
+                        vscode.window.showTextDocument(configUri, {
+                            selection: new vscode.Range(position.line - 1, position.column - 1, position.line - 1, position.column - 1)
+                        });
+                    }
+                });
+                
+                throw new Error(message);
+            }
+            
+            // Handle unexpected structure - alert user and stop to prevent data loss
+            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                const openFile = 'Open mcp.json';
+                const message = 'Your mcp.json has an unexpected structure (expected an object with "servers" property)';
+                
+                this.outputChannel.appendLine(`promptu: ${message}`);
+                
+                vscode.window.showErrorMessage(message, openFile).then(selection => {
+                    if (selection === openFile) {
+                        vscode.window.showTextDocument(configUri);
+                    }
+                });
+                
+                throw new Error(message);
+            }
+            
+            // Ensure servers object exists
+            if (!parsed.servers || typeof parsed.servers !== 'object') {
+                parsed.servers = {};
+            }
+            
+            return parsed as McpConfiguration;
         } catch (error) {
             if (error instanceof vscode.FileSystemError && error.code === 'FileNotFound') {
                 return null; // File doesn't exist
             }
             throw error;
         }
+    }
+
+    /**
+     * Converts a character offset to line and column numbers
+     */
+    private getLineAndColumn(content: string, offset: number): { line: number; column: number } {
+        const lines = content.substring(0, offset).split('\n');
+        return {
+            line: lines.length,
+            column: lines[lines.length - 1].length + 1
+        };
     }
 
     /**
@@ -364,10 +453,10 @@ export class McpInstaller {
 
         return vscode.window.withProgress({
             location: vscode.ProgressLocation.Notification,
-            title: `promptu: Installing ${server.name}...`,
+            title: `promptu: Installing ${server.name}`,
             cancellable: false
         }, async (progress) => {
-            progress.report({ message: 'Preparing dotnet tool install...' });
+            progress.report({ message: 'Preparing dotnet tool install' });
 
             // Build install command args
             const installArgs: string[] = ['tool', 'install', '--global', packageName];
@@ -387,7 +476,7 @@ export class McpInstaller {
                 installArgs.push('--version', server.version);
             }
 
-            progress.report({ message: 'Running dotnet tool install...' });
+            progress.report({ message: 'Running dotnet tool install' });
             const result = await this.executeDotnetCommand(installArgs);
 
             if (result.exitCode !== 0) {
@@ -400,27 +489,68 @@ export class McpInstaller {
 
     /**
      * Parses MCP configuration from URI parameter
+     * Handles multiple levels of URL encoding (e.g., from SafeLinks, redirects)
      */
-    static parseMcpParameter(mcpParam: string): McpServerConfig[] {
-        try {
-            // Parse JSON configuration - must be valid JSON object or array
-            const parsed = JSON.parse(decodeURIComponent(mcpParam));
-            
-            // Validate that parsed JSON is either an object or array
-            if (typeof parsed !== 'object' || parsed === null) {
-                throw new Error('Parsed JSON must be an object or array');
-            }
-            
-            // Handle single server object
-            if (!Array.isArray(parsed)) {
-                return [parsed as McpServerConfig];
-            }
+    parseMcpParameter(mcpParam: string): McpServerConfig[] {
+        const parsed = this.decodeAndParseJson(mcpParam);
+        return this.validateMcpServers(parsed);
+    }
 
-            // Handle array of servers
-            return parsed as McpServerConfig[];
-            
-        } catch (error) {
-            throw new Error(`MCP parameter must be valid JSON (object or array). Example: {"name":"MyServer","type":"http","url":"https://myserver/mcp"}. Error: ${error instanceof Error ? error.message : 'Parse error'}`);
+    /**
+     * Decodes URL-encoded input iteratively and parses as JSON
+     * Handles single, double, or triple+ URL encoding from redirects/SafeLinks
+     * @param input - Potentially URL-encoded JSON string
+     * @returns Parsed JSON value
+     * @throws Error if JSON cannot be parsed after all decode attempts
+     */
+    private decodeAndParseJson(input: string): unknown {
+        let decoded = input;
+        
+        for (let i = 0; i < 5; i++) { // Max 5 iterations to prevent infinite loops
+            try {
+                return JSON.parse(decoded);
+            } catch {
+                // JSON parse failed, try decoding one more level
+                try {
+                    const next = decodeURIComponent(decoded);
+                    if (next === decoded) {
+                        break; // No change after decode, can't decode further
+                    }
+                    decoded = next;
+                } catch {
+                    break; // Decode failed (malformed encoding), stop trying
+                }
+            }
         }
+        
+        throw new Error(`mcp parameter: must be valid JSON. Example: {"name":"MyServer","type":"http","url":"https://example.com/mcp"}`);
+    }
+
+    /**
+     * Validates parsed JSON as MCP server configuration(s)
+     * @param parsed - Parsed JSON value to validate
+     * @returns Array of validated MCP server configurations
+     * @throws Error if validation fails
+     */
+    private validateMcpServers(parsed: unknown): McpServerConfig[] {
+        // Validate that parsed JSON is either an object or array
+        if (typeof parsed !== 'object' || parsed === null) {
+            throw new Error('mcp parameter: must be an object or array');
+        }
+        
+        // Handle single server object or array of servers
+        const servers = Array.isArray(parsed) ? parsed : [parsed];
+        
+        // Validate required fields
+        for (const server of servers) {
+            if (!server.name || typeof server.name !== 'string') {
+                throw new Error('mcp parameter: server missing required "name" field');
+            }
+            if (!server.type || (server.type !== 'stdio' && server.type !== 'http')) {
+                throw new Error(`mcp parameter: server '${server.name}' has invalid "type" (must be "stdio" or "http")`);
+            }
+        }
+        
+        return servers as McpServerConfig[];
     }
 }

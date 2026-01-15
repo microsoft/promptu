@@ -32,7 +32,7 @@ suite('McpInstaller Test Suite', () => {
     suite('parseMcpParameter', () => {
         test('should parse single server object', () => {
             const param = JSON.stringify({ name: 'TestServer', type: 'http', url: 'http://test.com' });
-            const result = McpInstaller.parseMcpParameter(param);
+            const result = mcpInstaller.parseMcpParameter(param);
             
             assert.strictEqual(result.length, 1);
             assert.strictEqual(result[0].name, 'TestServer');
@@ -46,7 +46,7 @@ suite('McpInstaller Test Suite', () => {
                 { name: 'Server2', type: 'stdio', command: 'test-cmd' }
             ];
             const param = JSON.stringify(servers);
-            const result = McpInstaller.parseMcpParameter(param);
+            const result = mcpInstaller.parseMcpParameter(param);
             
             assert.strictEqual(result.length, 2);
             assert.strictEqual(result[0].name, 'Server1');
@@ -56,7 +56,36 @@ suite('McpInstaller Test Suite', () => {
         test('should handle URL encoded parameters', () => {
             const serverObj = { name: 'TestServer', type: 'http', url: 'http://test.com' };
             const param = encodeURIComponent(JSON.stringify(serverObj));
-            const result = McpInstaller.parseMcpParameter(param);
+            const result = mcpInstaller.parseMcpParameter(param);
+            
+            assert.strictEqual(result.length, 1);
+            assert.strictEqual(result[0].name, 'TestServer');
+        });
+
+        test('should handle double URL encoded parameters (SafeLinks scenario)', () => {
+            const serverObj = { name: 'TestServer', type: 'http', url: 'https://test.com/mcp' };
+            // Double encode to simulate SafeLinks/redirect adding extra encoding
+            const param = encodeURIComponent(encodeURIComponent(JSON.stringify(serverObj)));
+            const result = mcpInstaller.parseMcpParameter(param);
+            
+            assert.strictEqual(result.length, 1);
+            assert.strictEqual(result[0].name, 'TestServer');
+            assert.strictEqual(result[0].url, 'https://test.com/mcp');
+        });
+
+        test('should handle triple URL encoded parameters', () => {
+            const serverObj = { name: 'TestServer', type: 'http', url: 'https://test.com/mcp' };
+            // Triple encode to simulate multiple redirects
+            const param = encodeURIComponent(encodeURIComponent(encodeURIComponent(JSON.stringify(serverObj))));
+            const result = mcpInstaller.parseMcpParameter(param);
+            
+            assert.strictEqual(result.length, 1);
+            assert.strictEqual(result[0].name, 'TestServer');
+        });
+
+        test('should handle already valid JSON (no encoding)', () => {
+            const param = '{"name":"TestServer","type":"http","url":"https://test.com"}';
+            const result = mcpInstaller.parseMcpParameter(param);
             
             assert.strictEqual(result.length, 1);
             assert.strictEqual(result[0].name, 'TestServer');
@@ -64,14 +93,32 @@ suite('McpInstaller Test Suite', () => {
 
         test('should throw error for invalid JSON', () => {
             assert.throws(() => {
-                McpInstaller.parseMcpParameter('invalid json');
-            }, /MCP parameter must be valid JSON/);
+                mcpInstaller.parseMcpParameter('invalid json');
+            }, /mcp parameter: must be valid JSON/);
         });
 
         test('should throw error for non-object, non-array JSON', () => {
             assert.throws(() => {
-                McpInstaller.parseMcpParameter('"just a string"');
-            }, /MCP parameter must be valid JSON/);
+                mcpInstaller.parseMcpParameter('"just a string"');
+            }, /mcp parameter: must be an object or array/);
+        });
+
+        test('should throw error for missing name field', () => {
+            assert.throws(() => {
+                mcpInstaller.parseMcpParameter('{"type":"http","url":"https://example.com"}');
+            }, /mcp parameter: server missing required "name" field/);
+        });
+
+        test('should throw error for missing type field', () => {
+            assert.throws(() => {
+                mcpInstaller.parseMcpParameter('{"name":"TestServer","url":"https://example.com"}');
+            }, /mcp parameter: server .* has invalid "type"/);
+        });
+
+        test('should throw error for invalid type value', () => {
+            assert.throws(() => {
+                mcpInstaller.parseMcpParameter('{"name":"TestServer","type":"websocket"}');
+            }, /mcp parameter: server .* has invalid "type"/);
         });
     });
 
