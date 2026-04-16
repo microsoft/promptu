@@ -9,6 +9,35 @@ import { discoverOAuthProtectedResourceMetadata } from '@modelcontextprotocol/sd
 import { McpServerConfig } from './types';
 
 /**
+ * Parses a WWW-Authenticate header for Bearer challenge parameters.
+ * Extracts scope, resource_metadata, and error values.
+ */
+export function parseWWWAuthenticateBearer(header: string | null): { scope?: string; resourceMetadata?: string; error?: string } {
+    if (!header) {
+        return {};
+    }
+    const result: { scope?: string; resourceMetadata?: string; error?: string } = {};
+    const bearerMatch = header.match(/Bearer\s+(.*)/i);
+    if (!bearerMatch) {
+        return result;
+    }
+    const params = bearerMatch[1];
+    const scopeMatch = params.match(/\bscope="([^"]+)"/);
+    if (scopeMatch) {
+        result.scope = scopeMatch[1];
+    }
+    const metadataMatch = params.match(/\bresource_metadata="([^"]+)"/);
+    if (metadataMatch) {
+        result.resourceMetadata = metadataMatch[1];
+    }
+    const errorMatch = params.match(/\berror="([^"]+)"/);
+    if (errorMatch) {
+        result.error = errorMatch[1];
+    }
+    return result;
+}
+
+/**
  * Manages MCP client connections and prompt fetching
  */
 export class McpClient {
@@ -19,62 +48,191 @@ export class McpClient {
     }
 
     /**
-     * Creates an authenticated HTTP transport with proper authorization headers
-     * @param serverUrl - The MCP server URL to check for auth requirements
-     * @returns StreamableHTTPClientTransport with authentication if needed
+     * Creates an authenticated HTTP transport that handles auth via a
+     * "connect -> 401 -> parse WWW-Authenticate -> get token -> retry" pattern.
+     *
+     * 1. Attempts upfront RFC 9728 discovery for scopes (best case).
+     * 2. If discovery fails, connects without auth and relies on the 401
+     *    response's WWW-Authenticate header to learn the required scopes.
+     * 3. Acquires a Microsoft token via VS Code's authentication API.
+     * 4. Retries the original request with the Bearer token.
+     *
+     * @param serverUrl - The MCP server URL
+     * @returns StreamableHTTPClientTransport with auth-retry fetch wrapper
      */
     private async createAuthenticatedTransport(serverUrl: string): Promise<StreamableHTTPClientTransport> {
+        this.outputChannel.appendLine(`promptu: Creating transport for ${serverUrl}...`);
+
+        // Use globalThis.fetch -- available in Node 18+ (VS Code extension host)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const nativeFetch = (globalThis as any).fetch as (url: string | URL, init?: any) => Promise<any>;
+
+        // Mutable state shared across requests within this transport
+        let currentScopes: string[] | undefined;
+        let currentToken: string | undefined;
+        // Serialize token acquisition to avoid duplicate auth prompts
+        let pendingTokenRequest: Promise<string | undefined> | undefined;
+
+        // --- Phase 1: Try upfront RFC 9728 discovery (optional, best-effort) ---
         try {
-            this.outputChannel.appendLine(`promptu: Checking authentication requirements for ${serverUrl}...`);
-            
-            // Use MCP SDK's built-in discovery
             const resourceMetadata = await discoverOAuthProtectedResourceMetadata(serverUrl);
-            
-            if (resourceMetadata?.authorization_servers && resourceMetadata.authorization_servers.length > 0) {
+            if (resourceMetadata?.authorization_servers?.length) {
                 const authServer = resourceMetadata.authorization_servers[0];
-                this.outputChannel.appendLine(`promptu: Auth server discovered: ${authServer}`);
-                
-                // Check if it's Microsoft OAuth
-                if (authServer.includes('login.microsoftonline.com')) {
-                    const scopes = resourceMetadata.scopes_supported || [];
-                    this.outputChannel.appendLine(`promptu: Microsoft OAuth detected, scopes: ${scopes.join(', ')}`);
-                    
-                    // Get VS Code Microsoft token
-                    const session = await vscode.authentication.getSession("microsoft", scopes, { createIfNone: true });
-                    if (session?.accessToken) {
-                        this.outputChannel.appendLine(`promptu: Got Microsoft access token, creating authenticated transport`);
-                        
-                        // Create transport with Authorization header
-                        return new StreamableHTTPClientTransport(new URL(serverUrl), {
-                            requestInit: {
-                                headers: {
-                                    ['Authorization']: `Bearer ${session.accessToken}`
-                                }
-                            }
-                        });
-                    } else {
-                        throw new Error('Microsoft authentication failed or was cancelled');
-                    }
-                } else {
-                    this.outputChannel.appendLine(`promptu: Non-Microsoft OAuth detected (${authServer}), not supported`);
-                    throw new Error(`OAuth server ${authServer} not supported. Currently only Microsoft OAuth is supported.`);
+                if (new URL(authServer).hostname === 'login.microsoftonline.com') {
+                    currentScopes = resourceMetadata.scopes_supported || [];
+                    this.outputChannel.appendLine(`promptu: Discovered scopes from metadata: ${currentScopes.join(', ')}`);
                 }
             }
-            
-            this.outputChannel.appendLine(`promptu: No authentication required for ${serverUrl}`);
-            // No auth needed - create basic transport
-            return new StreamableHTTPClientTransport(new URL(serverUrl));
-            
-        } catch (error) {
-            if (error instanceof Error && error.message.includes('not supported')) {
-                // Re-throw auth errors
-                throw error;
-            }
-            
-            // Auth discovery failed - try without auth (might be public MCP)
-            this.outputChannel.appendLine(`promptu: Auth discovery failed, trying without auth: ${error instanceof Error ? error.message : 'Unknown error'}`);
-            return new StreamableHTTPClientTransport(new URL(serverUrl));
+        } catch {
+            this.outputChannel.appendLine(`promptu: No OAuth metadata found, will authenticate on demand if needed`);
         }
+
+        // If we got scopes from discovery, pre-acquire a token
+        if (currentScopes?.length) {
+            try {
+                const session = await vscode.authentication.getSession("microsoft", currentScopes, { createIfNone: true });
+                currentToken = session?.accessToken;
+                if (currentToken) {
+                    this.outputChannel.appendLine(`promptu: Pre-acquired token from discovered scopes`);
+                }
+            } catch (e) {
+                this.outputChannel.appendLine(`promptu: Pre-auth failed, will retry on 401: ${e instanceof Error ? e.message : 'Unknown error'}`);
+            }
+        }
+
+        // Helper: acquire a token, serialized to avoid duplicate prompts
+        const acquireToken = async (scopes: string[]): Promise<string | undefined> => {
+            if (pendingTokenRequest) {
+                return pendingTokenRequest;
+            }
+            pendingTokenRequest = (async () => {
+                try {
+                    this.outputChannel.appendLine(`promptu: Acquiring Microsoft token with scopes: ${scopes.join(', ')}`);
+                    const session = await vscode.authentication.getSession("microsoft", scopes, { createIfNone: true });
+                    currentToken = session?.accessToken;
+                    return currentToken;
+                } catch (e) {
+                    this.outputChannel.appendLine(`promptu: Token acquisition failed: ${e instanceof Error ? e.message : 'Unknown error'}`);
+                    return undefined;
+                } finally {
+                    pendingTokenRequest = undefined;
+                }
+            })();
+            return pendingTokenRequest;
+        };
+
+        // --- Phase 2: Create fetch wrapper with 401 retry ---
+        // The wrapper has the same signature as globalThis.fetch (FetchLike)
+        const authFetch = async (url: string | URL, init?: any): Promise<any> => {
+            // Build headers preserving any existing ones from the SDK
+            const headers: Record<string, string> = {};
+            if (init?.headers) {
+                // Handle Headers object, array, or plain object
+                // Check Array.isArray first since arrays also have forEach
+                if (Array.isArray(init.headers)) {
+                    for (const [key, value] of init.headers) { headers[key] = value; }
+                } else if (typeof init.headers.forEach === 'function') {
+                    init.headers.forEach((value: string, key: string) => { headers[key] = value; });
+                } else {
+                    Object.assign(headers, init.headers);
+                }
+            }
+
+            // Inject current token if available
+            if (currentToken) {
+                headers['Authorization'] = `Bearer ${currentToken}`;
+            }
+
+            let response = await nativeFetch(url, { ...init, headers });
+
+            // Handle 401/403 -- parse WWW-Authenticate and retry with a fresh token
+            if (response.status === 401 || response.status === 403) {
+                this.outputChannel.appendLine(`promptu: Got ${response.status} from server, attempting auth retry...`);
+
+                const wwwAuth = parseWWWAuthenticateBearer(response.headers.get('WWW-Authenticate'));
+                const mcpServerOrigin = new URL(serverUrl).origin;
+
+                // Update scopes from inline challenge if provided
+                if (wwwAuth.scope) {
+                    currentScopes = wwwAuth.scope.split(' ').filter(s => s.trim().length > 0);
+                    this.outputChannel.appendLine(`promptu: Scopes from WWW-Authenticate: ${currentScopes.join(', ')}`);
+                }
+
+                // If no inline scopes, try fetching resource metadata from the challenge URL
+                if (!currentScopes?.length && wwwAuth.resourceMetadata) {
+                    try {
+                        const metadataUrl = new URL(wwwAuth.resourceMetadata);
+
+                        // Security: only fetch resource_metadata from same origin as MCP server (prevents SSRF)
+                        if (metadataUrl.origin !== mcpServerOrigin) {
+                            this.outputChannel.appendLine(`promptu: Rejecting resource_metadata URL -- origin ${metadataUrl.origin} does not match MCP server origin ${mcpServerOrigin}`);
+                        } else if (metadataUrl.protocol !== 'https:') {
+                            this.outputChannel.appendLine(`promptu: Rejecting resource_metadata URL -- must be HTTPS`);
+                        } else {
+                            this.outputChannel.appendLine(`promptu: Fetching resource metadata from challenge: ${wwwAuth.resourceMetadata}`);
+                            const metadataResponse = await nativeFetch(wwwAuth.resourceMetadata);
+                            if (metadataResponse.ok) {
+                                const metadata = await metadataResponse.json() as any;
+
+                                // Security: validate that metadata.resource matches the MCP server URL (RFC 9728)
+                                if (metadata.resource) {
+                                    const resourceUrl = new URL(metadata.resource);
+                                    const serverUrlObj = new URL(serverUrl);
+                                    const metadataResource = `${resourceUrl.origin}${resourceUrl.pathname.replace(/\/$/, '')}`;
+                                    const expectedResource = `${serverUrlObj.origin}${serverUrlObj.pathname.replace(/\/$/, '')}`;
+                                    if (metadataResource !== expectedResource) {
+                                        this.outputChannel.appendLine(`promptu: Rejecting resource metadata -- resource "${metadataResource}" does not match MCP server "${expectedResource}"`);
+                                    } else if (metadata.scopes_supported?.length) {
+                                        currentScopes = metadata.scopes_supported;
+                                        this.outputChannel.appendLine(`promptu: Scopes from resource metadata: ${currentScopes!.join(', ')}`);
+                                    }
+                                } else if (metadata.scopes_supported?.length) {
+                                    // No resource field to validate -- accept scopes since URL was same-origin
+                                    currentScopes = metadata.scopes_supported;
+                                    this.outputChannel.appendLine(`promptu: Scopes from resource metadata (no resource field): ${currentScopes!.join(', ')}`);
+                                }
+                            }
+                        }
+                    } catch (e) {
+                        this.outputChannel.appendLine(`promptu: Failed to fetch resource metadata: ${e instanceof Error ? e.message : 'Unknown error'}`);
+                    }
+                }
+
+                // If we still have no scopes, try the well-known path on the server's own origin
+                if (!currentScopes?.length) {
+                    try {
+                        const wellKnownUrl = `${mcpServerOrigin}/.well-known/oauth-protected-resource`;
+                        this.outputChannel.appendLine(`promptu: Trying well-known metadata at ${wellKnownUrl}`);
+                        const metadataResponse = await nativeFetch(wellKnownUrl);
+                        if (metadataResponse.ok) {
+                            const metadata = await metadataResponse.json() as any;
+                            if (metadata.scopes_supported?.length) {
+                                currentScopes = metadata.scopes_supported;
+                                this.outputChannel.appendLine(`promptu: Scopes from well-known metadata: ${currentScopes!.join(', ')}`);
+                            }
+                        }
+                    } catch {
+                        // Well-known not available, continue
+                    }
+                }
+
+                // Acquire token and retry if we have scopes
+                if (currentScopes?.length) {
+                    const token = await acquireToken(currentScopes);
+                    if (token) {
+                        headers['Authorization'] = `Bearer ${token}`;
+                        this.outputChannel.appendLine(`promptu: Retrying request with auth token...`);
+                        response = await nativeFetch(url, { ...init, headers });
+                    }
+                } else {
+                    this.outputChannel.appendLine(`promptu: No scopes discovered from server's 401 challenge -- cannot determine authentication requirements. Ensure the server returns a WWW-Authenticate header with scope or resource_metadata parameters.`);
+                }
+            }
+
+            return response;
+        };
+
+        return new StreamableHTTPClientTransport(new URL(serverUrl), { fetch: authFetch });
     }
 
     /**

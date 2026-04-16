@@ -2,7 +2,7 @@
   "name": "promptu",
   "displayName": "promptu",
   "description": "Create shareable, clickable links that run AI prompts from anywhere directly in VSCode's Github Copilot Chat",
-  "version": "2.0.3",
+  "version": "2.0.4",
   "icon": "promptu.png",
   "publisher": "ms-promptu",
   "engines": {
@@ -86,18 +86,18 @@
     "@types/mocha": "^10.0.0",
     "@types/node": "16.x",
     "@types/vscode": "^1.103.0",
-    "@typescript-eslint/eslint-plugin": "^8.0.0",
-    "@typescript-eslint/parser": "^8.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.58.2",
+    "@typescript-eslint/parser": "^8.58.2",
     "@vscode/test-cli": "^0.0.12",
     "@vscode/test-electron": "^2.5.2",
-    "@vscode/vsce": "^3.7.1",
-    "esbuild": "^0.25.10",
+    "@vscode/vsce": "^3.8.1",
+    "esbuild": "^0.25.12",
     "eslint": "^8.28.0",
     "mocha": "^10.2.0",
     "typescript": "^5.5.0"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.18.1",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "jsonc-parser": "^3.3.1",
     "node-fetch": "^3.3.0"
   }
