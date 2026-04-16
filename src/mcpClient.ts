@@ -38,6 +38,30 @@ export function parseWWWAuthenticateBearer(header: string | null): { scope?: str
 }
 
 /**
+ * Fetches a URL with manual redirect handling -- only follows HTTPS redirects.
+ */
+async function safeFetch(fetchFn: (url: string | URL, init?: any) => Promise<any>, url: string, init?: any): Promise<any> {
+    const maxRedirects = 5;
+    let currentUrl = url;
+    for (let i = 0; i < maxRedirects; i++) {
+        const response = await fetchFn(currentUrl, { ...init, redirect: 'manual' });
+        if (![301, 302, 303, 307, 308].includes(response.status)) {
+            return response;
+        }
+        const location = response.headers.get('location');
+        if (!location) {
+            return response;
+        }
+        const redirectUrl = new URL(location, currentUrl);
+        if (redirectUrl.protocol !== 'https:') {
+            return response; // Don't follow non-HTTPS redirects
+        }
+        currentUrl = redirectUrl.toString();
+    }
+    throw new Error('Too many redirects');
+}
+
+/**
  * Manages MCP client connections and prompt fetching
  */
 export class McpClient {
@@ -159,18 +183,17 @@ export class McpClient {
                 }
 
                 // If no inline scopes, try fetching resource metadata from the challenge URL
+                // Per RFC 9728 Section 5, resource_metadata URLs may be cross-origin.
+                // Security is enforced by validating the metadata's resource field matches the MCP server.
                 if (!currentScopes?.length && wwwAuth.resourceMetadata) {
                     try {
                         const metadataUrl = new URL(wwwAuth.resourceMetadata);
 
-                        // Security: only fetch resource_metadata from same origin as MCP server (prevents SSRF)
-                        if (metadataUrl.origin !== mcpServerOrigin) {
-                            this.outputChannel.appendLine(`promptu: Rejecting resource_metadata URL -- origin ${metadataUrl.origin} does not match MCP server origin ${mcpServerOrigin}`);
-                        } else if (metadataUrl.protocol !== 'https:') {
+                        if (metadataUrl.protocol !== 'https:') {
                             this.outputChannel.appendLine(`promptu: Rejecting resource_metadata URL -- must be HTTPS`);
                         } else {
                             this.outputChannel.appendLine(`promptu: Fetching resource metadata from challenge: ${wwwAuth.resourceMetadata}`);
-                            const metadataResponse = await nativeFetch(wwwAuth.resourceMetadata);
+                            const metadataResponse = await safeFetch(nativeFetch, wwwAuth.resourceMetadata);
                             if (metadataResponse.ok) {
                                 const metadata = await metadataResponse.json() as any;
 
@@ -186,10 +209,8 @@ export class McpClient {
                                         currentScopes = metadata.scopes_supported;
                                         this.outputChannel.appendLine(`promptu: Scopes from resource metadata: ${currentScopes!.join(', ')}`);
                                     }
-                                } else if (metadata.scopes_supported?.length) {
-                                    // No resource field to validate -- accept scopes since URL was same-origin
-                                    currentScopes = metadata.scopes_supported;
-                                    this.outputChannel.appendLine(`promptu: Scopes from resource metadata (no resource field): ${currentScopes!.join(', ')}`);
+                                } else {
+                                    this.outputChannel.appendLine(`promptu: Resource metadata missing required 'resource' field, skipping`);
                                 }
                             }
                         }
@@ -198,21 +219,46 @@ export class McpClient {
                     }
                 }
 
-                // If we still have no scopes, try the well-known path on the server's own origin
+                // If we still have no scopes, try well-known paths per RFC 9728 Section 3
+                // The well-known URI is inserted between host and path components
                 if (!currentScopes?.length) {
-                    try {
-                        const wellKnownUrl = `${mcpServerOrigin}/.well-known/oauth-protected-resource`;
-                        this.outputChannel.appendLine(`promptu: Trying well-known metadata at ${wellKnownUrl}`);
-                        const metadataResponse = await nativeFetch(wellKnownUrl);
-                        if (metadataResponse.ok) {
-                            const metadata = await metadataResponse.json() as any;
-                            if (metadata.scopes_supported?.length) {
-                                currentScopes = metadata.scopes_supported;
-                                this.outputChannel.appendLine(`promptu: Scopes from well-known metadata: ${currentScopes!.join(', ')}`);
+                    const serverUrlObj = new URL(serverUrl);
+                    const hasPath = serverUrlObj.pathname !== '/';
+                    const wellKnownBase = `${serverUrlObj.origin}/.well-known/oauth-protected-resource`;
+
+                    // Try path-appended first (for servers with path components)
+                    if (hasPath) {
+                        try {
+                            const pathAppendedUrl = `${wellKnownBase}${serverUrlObj.pathname}`;
+                            this.outputChannel.appendLine(`promptu: Trying well-known metadata at ${pathAppendedUrl}`);
+                            const metadataResponse = await safeFetch(nativeFetch, pathAppendedUrl);
+                            if (metadataResponse.ok) {
+                                const metadata = await metadataResponse.json() as any;
+                                if (metadata.scopes_supported?.length) {
+                                    currentScopes = metadata.scopes_supported;
+                                    this.outputChannel.appendLine(`promptu: Scopes from well-known metadata: ${currentScopes!.join(', ')}`);
+                                }
                             }
+                        } catch {
+                            // Path-appended well-known not available, try root
                         }
-                    } catch {
-                        // Well-known not available, continue
+                    }
+
+                    // Try root well-known
+                    if (!currentScopes?.length) {
+                        try {
+                            this.outputChannel.appendLine(`promptu: Trying well-known metadata at ${wellKnownBase}`);
+                            const metadataResponse = await safeFetch(nativeFetch, wellKnownBase);
+                            if (metadataResponse.ok) {
+                                const metadata = await metadataResponse.json() as any;
+                                if (metadata.scopes_supported?.length) {
+                                    currentScopes = metadata.scopes_supported;
+                                    this.outputChannel.appendLine(`promptu: Scopes from well-known metadata: ${currentScopes!.join(', ')}`);
+                                }
+                            }
+                        } catch {
+                            // Root well-known not available, continue
+                        }
                     }
                 }
 
