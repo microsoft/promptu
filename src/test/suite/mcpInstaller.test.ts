@@ -3,7 +3,7 @@
 
 import * as assert from 'assert';
 import * as vscode from 'vscode';
-import { McpInstaller } from '../../mcpInstaller';
+import { McpInstaller, parseDotnetToolListOutput } from '../../mcpInstaller';
 
 suite('McpInstaller Test Suite', () => {
     let mcpInstaller: McpInstaller;
@@ -160,6 +160,61 @@ suite('McpInstaller Test Suite', () => {
             
             assert.strictEqual(installer.isVersionSufficient('1.2', '1.2.0'), true);
             assert.strictEqual(installer.isVersionSufficient('1.2.0', '1.2'), true);
+        });
+    });
+
+    suite('parseDotnetToolListOutput', () => {
+        test('should parse standard dotnet tool list output', () => {
+            const stdout = [
+                'Package Id          Version          Commands',
+                '---------------------------------------------------',
+                'my-example-tool     1.2.3            MyExampleTool'
+            ].join('\n');
+            const result = parseDotnetToolListOutput(stdout);
+            assert.deepStrictEqual(result, { version: '1.2.3', commandName: 'MyExampleTool' });
+        });
+
+        test('should return null when package is not installed', () => {
+            const stdout = [
+                'Package Id          Version          Commands',
+                '---------------------------------------------------'
+            ].join('\n');
+            const result = parseDotnetToolListOutput(stdout);
+            assert.strictEqual(result, null);
+        });
+
+        test('should return null for empty string', () => {
+            assert.strictEqual(parseDotnetToolListOutput(''), null);
+        });
+
+        test('should return null when data row has fewer than 3 columns', () => {
+            const stdout = [
+                'Package Id          Version          Commands',
+                '---------------------------------------------------',
+                'my-example-tool     1.2.3'
+            ].join('\n');
+            const result = parseDotnetToolListOutput(stdout);
+            assert.strictEqual(result, null);
+        });
+
+        test('should handle pre-release versions', () => {
+            const stdout = [
+                'Package Id          Version          Commands',
+                '---------------------------------------------------',
+                'mypackage           1.2.3-beta       MyTool'
+            ].join('\n');
+            const result = parseDotnetToolListOutput(stdout);
+            assert.deepStrictEqual(result, { version: '1.2.3-beta', commandName: 'MyTool' });
+        });
+
+        test('should handle extra whitespace in columns', () => {
+            const stdout = [
+                'Package Id                                    Version          Commands',
+                '-----------------------------------------------------------------------------------',
+                '  my-example-tool                              2.0.1            MyExampleTool  '
+            ].join('\n');
+            const result = parseDotnetToolListOutput(stdout);
+            assert.deepStrictEqual(result, { version: '2.0.1', commandName: 'MyExampleTool' });
         });
     });
 });

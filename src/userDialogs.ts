@@ -31,23 +31,28 @@ export async function showPromptConfirmation(
 }
 
 /**
- * Shows confirmation dialog for MCP server installation
+ * Shows confirmation dialog for MCP server installation or update
  * @param server - MCP server configuration to install
- * @returns Promise that resolves to true if user wants to install, false if cancelled
+ * @param installedVersion - If set, indicates this is an update from this version
+ * @returns Promise that resolves to true if user wants to proceed, false if cancelled
  */
-export async function showMcpInstallationConfirmation(server: McpServerConfig): Promise<boolean> {
-    const details = buildMcpInstallationDetailsMessage(server);
+export async function showMcpInstallationConfirmation(server: McpServerConfig, installedVersion?: string): Promise<boolean> {
+    const isUpdate = !!installedVersion;
+    const details = buildMcpInstallationDetailsMessage(server, installedVersion);
     
+    const action = isUpdate ? 'Update' : 'Install';
     const result = await vscode.window.showWarningMessage(
-        `promptu: MCP server '${server.name}' is required to execute this prompt but is not installed.`,
+        isUpdate
+            ? `promptu: MCP server '${server.name}' needs to be updated to run this prompt.`
+            : `promptu: MCP server '${server.name}' is required to execute this prompt but is not installed.`,
         {
             detail: details,
             modal: true
         },
-        'Install'
+        action
     );
     
-    return result === 'Install';
+    return result === action;
 }
 
 /**
@@ -89,11 +94,13 @@ function buildPromptDetailsMessage(parsedPrompt: ParsedPrompt, input: string, mc
 }
 
 /**
- * Builds the detailed message for MCP installation confirmation
+ * Builds the detailed message for MCP installation/update confirmation
  * @param server - MCP server configuration
+ * @param installedVersion - If set, indicates this is an update from this version
  * @returns Formatted details message
  */
-function buildMcpInstallationDetailsMessage(server: McpServerConfig): string {
+function buildMcpInstallationDetailsMessage(server: McpServerConfig, installedVersion?: string): string {
+    const isUpdate = !!installedVersion;
     const lines: string[] = [
         'Do not proceed if you did not initiate this request.',
         '',
@@ -127,35 +134,49 @@ function buildMcpInstallationDetailsMessage(server: McpServerConfig): string {
     // NuGet-specific details
     if (server.nugetPackage) {
         lines.push(
-            '📦 Installation Details',
+            isUpdate ? '📦 Update Details' : '📦 Installation Details',
             `Package: ${server.nugetPackage}`
         );
         
+        if (isUpdate) {
+            lines.push(`Current Version: ${installedVersion}`);
+        }
+
+        if (server.version) {
+            lines.push(`${isUpdate ? 'New Version' : 'Version'}: ${server.version}`);
+        }
+
         // Format feed URL for better readability if custom feed is specified
         if (server.nugetFeed) {
             lines.push(`Feed: ${formatLongPath(server.nugetFeed)}`);
         } else {
             lines.push('Feed: Default NuGet feed');
         }
-
-        // Add version if specified
-        if (server.version) {
-            lines.push(`Version: ${server.version}`);
-        }
         
         lines.push(
             '',
             "The 'dotnet' command is required to install this package.",
-            "Installation will use 'dotnet tool install --global'",
-            ''
         );
+
+        if (isUpdate) {
+            lines.push(
+                `This will update the tool using 'dotnet tool update --global'.`,
+                'If the tool is currently running, it will be stopped before updating.',
+            );
+        } else {
+            lines.push(
+                "Installation will use 'dotnet tool install --global'",
+            );
+        }
+
+        lines.push('');
     }
     
     lines.push(
         '📝 Configuration',
         'The server will be added to your MCP configuration file.',
         '',
-        'Do you want to install this MCP Server?'
+        `Do you want to ${isUpdate ? 'update' : 'install'} this MCP Server?`
     );
     
     return lines.join('\n');

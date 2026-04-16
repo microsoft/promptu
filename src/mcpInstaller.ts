@@ -123,7 +123,8 @@ export class McpInstaller {
 
         // Check if package is already installed
         let isNuGetInstalled = false;
-        const installedVersion = await this.getNuGetPackageVersion(server.nugetPackage);
+        const toolInfo = await this.getDotnetToolInfo(server.nugetPackage);
+        const installedVersion = toolInfo?.version ?? null;
         if (installedVersion) {
             if (server.version) {
                 if (this.isVersionSufficient(installedVersion, server.version)) {
@@ -156,13 +157,15 @@ export class McpInstaller {
         }
 
         // Ask user for permission with detailed information
-        const shouldInstall = await showMcpInstallationConfirmation(server);
+        // Pass installedVersion so the dialog can show update-specific messaging
+        const needsUpdate = installedVersion !== null && !isNuGetInstalled;
+        const shouldInstall = await showMcpInstallationConfirmation(server, needsUpdate ? installedVersion : undefined);
         if (!shouldInstall) {
             return { cancelled: true, configModified: false }; // User cancelled
         }
 
-        // Install NuGet package
-        await this.installNuGetGlobalTool(server);
+        // Install NuGet package, passing existing tool info to avoid redundant query
+        await this.installNuGetGlobalTool(server, toolInfo);
         this.outputChannel.appendLine(`promptu: NuGet package installed successfully`);
 
         // Add to mcp.json config
@@ -382,7 +385,7 @@ export class McpInstaller {
         this.outputChannel.appendLine(`promptu: Running: ${commandLine}`);
         
         return new Promise((resolve) => {
-            const process = spawn('dotnet', args, { shell: true });
+            const process = spawn('dotnet', args);
             
             let stdout = '';
             let stderr = '';
@@ -401,65 +404,36 @@ export class McpInstaller {
     }
 
     /**
-     * Gets the installed version of a NuGet global tool
-     * @param packageName - Name of the NuGet package
-     * @returns Promise<string | null> - Version string if installed, null if not installed
-     */
-    private async getNuGetPackageVersion(packageName: string): Promise<string | null> {
-        this.outputChannel.appendLine(`promptu: Checking version for NuGet package: ${packageName}`);
-        
-        try {
-            const result = await this.executeDotnetCommand(['tool', 'list', '--global', packageName]);
-            
-            this.outputChannel.appendLine(`promptu: dotnet tool list stdout:\n${result.stdout}`);
-
-            // Parse the output to check if package is installed. If package is NOT installed, there will be no package info line
-            // Package Id                                    Version          Commands
-            // -----------------------------------------------------------------------------------
-            // my.example.package                            1.2.3-beta       example-command
-            const lines = result.stdout.trim().split('\n');
-            
-            if (lines.length >= 3) {
-                const dataLine = lines[2].trim();
-                
-                // Split by whitespace to get: [packageName, version, command]
-                const parts = dataLine.split(/\s+/);
-                
-                if (parts.length >= 2) {
-                    const version = parts[1];
-                    this.outputChannel.appendLine(`promptu: Package ${packageName} is installed with version: ${version}`);
-                    return version;
-                }
-            }
-            
-            this.outputChannel.appendLine(`promptu: Package ${packageName} is not installed, or version was not found.`);
-            return null;
-        } catch (error) {
-            this.outputChannel.appendLine(`promptu: Error checking NuGet package version: ${error instanceof Error ? error.message : 'Unknown error'}`);
-            return null;
-        }
-    }
-
-    /**
-     * Installs a NuGet global tool
+     * Installs or updates a NuGet global tool
      * @param server - MCP server configuration with NuGet details
+     * @param existingToolInfo - Pre-fetched tool info if available (avoids redundant dotnet tool list call)
      */
-    private async installNuGetGlobalTool(server: McpServerConfig): Promise<void> {
+    private async installNuGetGlobalTool(server: McpServerConfig, existingToolInfo?: {version: string; commandName: string} | null): Promise<void> {
         if (!server.nugetPackage) {
             throw new Error('NuGet package name is required for installation');
         }
 
         const packageName = server.nugetPackage; // Store to help TypeScript understand it's defined
 
+        // Use pre-fetched info if available, otherwise query
+        const toolInfo = existingToolInfo !== undefined ? existingToolInfo : await this.getDotnetToolInfo(packageName);
+        const isUpdate = toolInfo !== null;
+
         return vscode.window.withProgress({
             location: vscode.ProgressLocation.Notification,
-            title: `promptu: Installing ${server.name}`,
+            title: `promptu: ${isUpdate ? 'Updating' : 'Installing'} ${server.name}`,
             cancellable: false
         }, async (progress) => {
-            progress.report({ message: 'Preparing dotnet tool install' });
+            const action = isUpdate ? 'update' : 'install';
+            progress.report({ message: `Preparing dotnet tool ${action}` });
 
-            // Build install command args
-            const installArgs: string[] = ['tool', 'install', '--global', packageName];
+            // If updating, kill any running processes that may hold file locks
+            if (isUpdate && toolInfo?.commandName) {
+                await this.stopRunningTool(toolInfo.commandName);
+            }
+
+            // Build command args -- use 'update' if already installed, 'install' if not
+            const installArgs: string[] = ['tool', action, '--global', packageName];
             
             // Add custom feed if specified
             if (server.nugetFeed) {
@@ -476,15 +450,79 @@ export class McpInstaller {
                 installArgs.push('--version', server.version);
             }
 
-            progress.report({ message: 'Running dotnet tool install' });
+            progress.report({ message: `Running dotnet tool ${action}` });
             const result = await this.executeDotnetCommand(installArgs);
 
             if (result.exitCode !== 0) {
-                throw new Error(`dotnet tool install failed: ${result.stderr}`);
+                throw new Error(`dotnet tool ${action} failed: ${result.stderr}`);
             }
 
-            this.outputChannel.appendLine(`promptu: NuGet package installed successfully`);
+            this.outputChannel.appendLine(`promptu: NuGet package ${isUpdate ? 'updated' : 'installed'} successfully`);
         });
+    }
+
+    /**
+     * Gets info about an installed dotnet global tool.
+     * @param packageName - The NuGet package name
+     * @returns Tool info with version and command name, or null if not installed
+     */
+    private async getDotnetToolInfo(packageName: string): Promise<{version: string; commandName: string} | null> {
+        this.outputChannel.appendLine(`promptu: Checking version for NuGet package: ${packageName}`);
+        
+        try {
+            const result = await this.executeDotnetCommand(['tool', 'list', '--global', packageName]);
+            
+            this.outputChannel.appendLine(`promptu: dotnet tool list stdout:\n${result.stdout}`);
+
+            const info = parseDotnetToolListOutput(result.stdout);
+            if (info) {
+                this.outputChannel.appendLine(`promptu: Package ${packageName} is installed with version: ${info.version}, command: ${info.commandName}`);
+            } else {
+                this.outputChannel.appendLine(`promptu: Package ${packageName} is not installed, or version was not found.`);
+            }
+            return info;
+        } catch (error) {
+            this.outputChannel.appendLine(`promptu: Error checking NuGet package version: ${error instanceof Error ? error.message : 'Unknown error'}`);
+            return null;
+        }
+    }
+
+    /**
+     * Attempts to stop a running dotnet tool process to release file locks.
+     * Windows-only -- file locking is not an issue on macOS/Linux.
+     * @param commandName - The tool's command name (from dotnet tool list)
+     */
+    private async stopRunningTool(commandName: string): Promise<void> {
+        if (process.platform !== 'win32') {
+            return; // File locking is Windows-only
+        }
+
+        // Sanitize: only allow alphanumeric, hyphens, dots, underscores
+        if (!/^[a-zA-Z0-9._-]+$/.test(commandName)) {
+            this.outputChannel.appendLine(`promptu: Process name '${commandName}' contains unexpected characters, skipping process kill`);
+            return;
+        }
+
+        try {
+            this.outputChannel.appendLine(`promptu: Stopping running process: ${commandName}`);
+            const killResult = await new Promise<{exitCode: number, stdout: string, stderr: string}>((resolve) => {
+                const proc = spawn('taskkill', ['/IM', `${commandName}.exe`], { shell: false });
+                let stdout = '';
+                let stderr = '';
+                proc.stdout?.on('data', (data) => stdout += data.toString());
+                proc.stderr?.on('data', (data) => stderr += data.toString());
+                proc.on('close', (exitCode) => resolve({ exitCode: exitCode || 0, stdout, stderr }));
+                proc.on('error', (error) => resolve({ exitCode: 1, stdout, stderr: error.message }));
+            });
+
+            if (killResult.stdout.includes('SUCCESS')) {
+                this.outputChannel.appendLine(`promptu: Stopped process '${commandName}'`);
+            } else {
+                this.outputChannel.appendLine(`promptu: Process '${commandName}' is not currently running`);
+            }
+        } catch (e) {
+            this.outputChannel.appendLine(`promptu: Could not stop running tool process: ${e instanceof Error ? e.message : 'Unknown error'}`);
+        }
     }
 
     /**
@@ -553,4 +591,21 @@ export class McpInstaller {
         
         return servers as McpServerConfig[];
     }
+}
+
+/**
+ * Parses the stdout of `dotnet tool list --global` to extract tool version and command name.
+ * @param stdout - The raw stdout string from `dotnet tool list`
+ * @returns Object with version and commandName, or null if not found
+ */
+export function parseDotnetToolListOutput(stdout: string): {version: string; commandName: string} | null {
+    const lines = stdout.trim().split('\n');
+    if (lines.length < 3) {
+        return null;
+    }
+    const parts = lines[2].trim().split(/\s+/);
+    if (parts.length < 3) {
+        return null;
+    }
+    return { version: parts[1], commandName: parts[2] };
 }
