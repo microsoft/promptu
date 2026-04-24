@@ -6,7 +6,8 @@ import * as path from 'path';
 import { spawn } from 'child_process';
 import * as jsonc from 'jsonc-parser';
 import { McpServerConfig, McpConfiguration } from './types';
-import { showMcpInstallationConfirmation } from './userDialogs';
+import { showMcpInstallationConfirmation, showMcpUpdateConfirmation } from './userDialogs';
+import * as crypto from 'crypto';
 
 /**
  * Result of an MCP server installation attempt
@@ -121,6 +122,31 @@ export class McpInstaller {
             this.outputChannel.appendLine(`promptu: Server '${server.name}' already configured in mcp.json`);
         }
 
+        // Handle config mismatch first, before checking NuGet install state
+        let configModified = false;
+        if (isConfigured) {
+            const existingConfig = config.servers[server.name];
+            if (this.hasConfigChanged(existingConfig, server)) {
+                if (this.isUpdateSuppressed(server)) {
+                    this.outputChannel.appendLine(`promptu: Server '${server.name}' config update suppressed by user`);
+                } else {
+                    this.outputChannel.appendLine(`promptu: NuGet server '${server.name}' config differs, prompting for update`);
+                    const updateResult = await showMcpUpdateConfirmation(server, existingConfig);
+
+                    if (updateResult === 'update') {
+                        await this.clearUpdateSuppression(server.name);
+                        this.addServerToConfig(config, server);
+                        configModified = true;
+                    } else if (updateResult === 'suppress') {
+                        await this.suppressUpdate(server);
+                    } else if (updateResult === 'cancel') {
+                        return { cancelled: true, configModified: false };
+                    }
+                    // 'skip' falls through — keep existing config
+                }
+            }
+        }
+
         // Check if package is already installed
         let isNuGetInstalled = false;
         const toolInfo = await this.getDotnetToolInfo(server.nugetPackage);
@@ -140,9 +166,9 @@ export class McpInstaller {
             }
         }
 
-        // If both NuGet package is installed and config exists, nothing to do
+        // If NuGet is installed and config exists, we're done
         if (isNuGetInstalled && isConfigured) {
-            return { cancelled: false, configModified: false };
+            return { cancelled: false, configModified };
         }
 
         // If NuGet is installed but config is missing, prompt before adding to config
@@ -156,22 +182,24 @@ export class McpInstaller {
             return { cancelled: false, configModified: true };
         }
 
-        // Ask user for permission with detailed information
-        // Pass installedVersion so the dialog can show update-specific messaging
+        // NuGet needs install/update — ask user for permission
         const needsUpdate = installedVersion !== null && !isNuGetInstalled;
         const shouldInstall = await showMcpInstallationConfirmation(server, needsUpdate ? installedVersion : undefined);
         if (!shouldInstall) {
-            return { cancelled: true, configModified: false }; // User cancelled
+            return { cancelled: true, configModified: false };
         }
 
-        // Install NuGet package, passing existing tool info to avoid redundant query
+        // Install NuGet package
         await this.installNuGetGlobalTool(server, toolInfo);
         this.outputChannel.appendLine(`promptu: NuGet package installed successfully`);
 
-        // Add to mcp.json config
-        this.addServerToConfig(config, server);
+        // Add to mcp.json config if not already configured or was updated via mismatch flow
+        if (!isConfigured) {
+            this.addServerToConfig(config, server);
+            configModified = true;
+        }
 
-        return { cancelled: false, configModified: true };
+        return { cancelled: false, configModified };
     }
 
     /**
@@ -181,10 +209,35 @@ export class McpInstaller {
      * @returns Promise<InstallResult> - result with cancellation and config modification status
      */
     private async installServerConfig(server: McpServerConfig, config: McpConfiguration): Promise<InstallResult> {
-        // Check if already configured
         if (config !== null && server.name in config.servers) {
-            this.outputChannel.appendLine(`promptu: Server '${server.name}' already configured in mcp.json`);
-            return { cancelled: false, configModified: false }; // Already configured
+            const existingConfig = config.servers[server.name];
+
+            if (!this.hasConfigChanged(existingConfig, server)) {
+                this.outputChannel.appendLine(`promptu: Server '${server.name}' already configured with matching settings`);
+                return { cancelled: false, configModified: false };
+            }
+
+            // Check if user previously chose "Don't Ask Again" for this incoming config
+            if (this.isUpdateSuppressed(server)) {
+                this.outputChannel.appendLine(`promptu: Server '${server.name}' update suppressed by user, using existing config`);
+                return { cancelled: false, configModified: false };
+            }
+
+            this.outputChannel.appendLine(`promptu: Server '${server.name}' configured with different settings, prompting for update`);
+            const result = await showMcpUpdateConfirmation(server, existingConfig);
+
+            if (result === 'update') {
+                await this.clearUpdateSuppression(server.name);
+                this.addServerToConfig(config, server);
+                return { cancelled: false, configModified: true };
+            } else if (result === 'skip') {
+                return { cancelled: false, configModified: false };
+            } else if (result === 'suppress') {
+                await this.suppressUpdate(server);
+                return { cancelled: false, configModified: false };
+            } else {
+                return { cancelled: true, configModified: false };
+            }
         }
 
         // Ask user for permission with detailed information
@@ -204,8 +257,12 @@ export class McpInstaller {
      * @param server - MCP server configuration to add
      */
     private addServerToConfig(config: McpConfiguration, server: McpServerConfig): void {
-        // Add the server configuration
+        // Destructure known fields out, keep unknown fields (e.g., headers, envFile, sandbox)
+        const existing = config.servers[server.name] || {};
+        const { type: _type, command: _command, args: _args, url: _url, env: _env, ...unknownFields } = existing as any;
+
         config.servers[server.name] = {
+            ...unknownFields,
             type: server.type,
             ...(server.command && { command: server.command }),
             ...(server.args && { args: server.args }),
@@ -214,6 +271,79 @@ export class McpInstaller {
         };
 
         this.outputChannel.appendLine(`promptu: Added ${server.name} to config (in memory)`);
+    }
+
+    /**
+     * Normalizes an env object by sorting keys and collapsing empty objects to undefined
+     */
+    private normalizeEnv(env?: Record<string, string | number | null>): Record<string, string | null> | undefined {
+        if (!env || Object.keys(env).length === 0) { return undefined; }
+        return Object.fromEntries(Object.entries(env).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => [k, v == null ? v : String(v)]));
+    }
+
+    /**
+     * Normalizes a server config to a canonical shape for comparison.
+     * Sorts env keys, collapses empty containers and falsy values to undefined.
+     */
+    private normalizeConfig(s: { type: string; command?: string; args?: string[]; url?: string; env?: Record<string, string | number | null> }) {
+        return {
+            type: s.type,
+            command: s.command || undefined,
+            args: s.args && s.args.length > 0 ? s.args : undefined,
+            url: s.url || undefined,
+            env: this.normalizeEnv(s.env),
+        };
+    }
+
+    /**
+     * Compares existing server config against the new server config.
+     * Normalizes both sides to the same shape to avoid false positives
+     * from key ordering differences, empty containers, or extra fields like 'name'.
+     */
+    private hasConfigChanged(existing: McpConfiguration['servers'][string], server: McpServerConfig): boolean {
+        return JSON.stringify(this.normalizeConfig(existing)) !== JSON.stringify(this.normalizeConfig(server));
+    }
+
+    /**
+     * Creates a hash of the incoming server config for suppression tracking.
+     * Only hashes the incoming config — the user's decision to suppress is about
+     * "I don't want this server updated to these specific settings" regardless
+     * of what their local config looks like.
+     */
+    private hashIncomingConfig(server: McpServerConfig): string {
+        const payload = JSON.stringify(this.normalizeConfig(server));
+        return crypto.createHash('sha256').update(payload).digest('hex');
+    }
+
+    /**
+     * Checks if the user previously suppressed the update prompt for this server + incoming config
+     */
+    private isUpdateSuppressed(server: McpServerConfig): boolean {
+        const suppressions = this.context.globalState.get<Record<string, string>>('promptu.suppressedConfigUpdates', {});
+        const storedHash = suppressions[server.name];
+        if (!storedHash) { return false; }
+        return storedHash === this.hashIncomingConfig(server);
+    }
+
+    /**
+     * Stores a suppression entry for this server + incoming config
+     */
+    private async suppressUpdate(server: McpServerConfig): Promise<void> {
+        const suppressions = this.context.globalState.get<Record<string, string>>('promptu.suppressedConfigUpdates', {});
+        suppressions[server.name] = this.hashIncomingConfig(server);
+        await this.context.globalState.update('promptu.suppressedConfigUpdates', suppressions);
+        this.outputChannel.appendLine(`promptu: User chose to suppress update prompts for '${server.name}'`);
+    }
+
+    /**
+     * Clears any stored suppression for a server (called when user accepts an update)
+     */
+    private async clearUpdateSuppression(serverName: string): Promise<void> {
+        const suppressions = this.context.globalState.get<Record<string, string>>('promptu.suppressedConfigUpdates', {});
+        if (serverName in suppressions) {
+            delete suppressions[serverName];
+            await this.context.globalState.update('promptu.suppressedConfigUpdates', suppressions);
+        }
     }
 
     /**
@@ -432,7 +562,7 @@ export class McpInstaller {
                 await this.stopRunningTool(toolInfo.commandName);
             }
 
-            // Build command args -- use 'update' if already installed, 'install' if not
+            // Build command args — use 'update' if already installed, 'install' if not
             const installArgs: string[] = ['tool', action, '--global', packageName];
             
             // Add custom feed if specified
@@ -489,7 +619,7 @@ export class McpInstaller {
 
     /**
      * Attempts to stop a running dotnet tool process to release file locks.
-     * Windows-only -- file locking is not an issue on macOS/Linux.
+     * Windows-only — file locking is not an issue on macOS/Linux.
      * @param commandName - The tool's command name (from dotnet tool list)
      */
     private async stopRunningTool(commandName: string): Promise<void> {
@@ -504,9 +634,9 @@ export class McpInstaller {
         }
 
         try {
-            this.outputChannel.appendLine(`promptu: Stopping running process: ${commandName}`);
+            this.outputChannel.appendLine(`promptu: Force-stopping running process: ${commandName}`);
             const killResult = await new Promise<{exitCode: number, stdout: string, stderr: string}>((resolve) => {
-                const proc = spawn('taskkill', ['/IM', `${commandName}.exe`], { shell: false });
+                const proc = spawn('taskkill', ['/F', '/IM', `${commandName}.exe`], { shell: false });
                 let stdout = '';
                 let stderr = '';
                 proc.stdout?.on('data', (data) => stdout += data.toString());

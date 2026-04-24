@@ -8,6 +8,7 @@ import { spawn } from 'child_process';
 import * as path from 'path';
 import * as os from 'os';
 import { ParsedPrompt } from './types';
+import { resolveSlashCommandName } from './promptParser';
 
 /**
  * Fetches prompts from various sources including local files, Azure DevOps, and GitHub
@@ -39,14 +40,14 @@ export class PromptFetcher {
      * Fetches a prompt from various sources and writes it to the extension storage location
      * @param parsedPrompt - The parsed prompt object containing type and location information
      * @param context - The VS Code extension context for storage location
-     * @returns Promise that resolves when the prompt is fetched and stored
+     * @returns Promise that resolves to the slash command name VS Code will use for this prompt
      * @throws {Error} When the prompt cannot be fetched, parsed, or written
      */
-    public async fetchPrompt(parsedPrompt: ParsedPrompt, context: vscode.ExtensionContext): Promise<void> {
+    public async fetchPrompt(parsedPrompt: ParsedPrompt, context: vscode.ExtensionContext): Promise<string> {
         try {
             // Skip 'installed' type as it doesn't need fetching
             if (parsedPrompt.type === 'installed') {
-                return;
+                return parsedPrompt.name;
             }
             
             let content: string;
@@ -56,21 +57,22 @@ export class PromptFetcher {
                 case 'local':
                     this.outputChannel.appendLine('promptu: Copying local file...');
                     const sourceUri = vscode.Uri.file(parsedPrompt.localPath!);
-                    await this.storePromptInStorage(sourceUri, parsedPrompt.name, context);
-                    return;
+                    content = Buffer.from(await vscode.workspace.fs.readFile(sourceUri)).toString('utf8');
+                    await this.storePromptInStorage(content, parsedPrompt.name, context);
+                    return resolveSlashCommandName(content, parsedPrompt.name);
                     
                 case 'url':
                     this.outputChannel.appendLine('promptu: Fetching prompt from URL...');
                     content = await this.fetchViaHttp(parsedPrompt.url!, {});
                     await this.storePromptInStorage(content, parsedPrompt.name, context);
-                    return;
+                    return resolveSlashCommandName(content, parsedPrompt.name);
                     
                 case 'ado':
                 case 'github':
                     // Try fast raw file fetch first, fall back to git clone if authentication is needed
                     this.outputChannel.appendLine('promptu: Fetching prompt from remote source...');
-                    await this.fetchWithFallbackStrategyToFile(parsedPrompt, context);
-                    return;
+                    content = await this.fetchWithFallbackStrategyToFile(parsedPrompt, context);
+                    return resolveSlashCommandName(content, parsedPrompt.name);
 
                 default:
                     throw new Error(`Unsupported prompt type: ${parsedPrompt.type}`);
@@ -168,9 +170,9 @@ export class PromptFetcher {
      * Fetches a prompt from remote Git source with fallback strategy, writing directly to storage
      * @param parsedPrompt - The parsed prompt information
      * @param context - The VS Code extension context
-     * @returns Promise that resolves when the prompt is fetched and written to storage
+     * @returns Promise that resolves to the fetched prompt content
      */
-    private async fetchWithFallbackStrategyToFile(parsedPrompt: ParsedPrompt, context: vscode.ExtensionContext): Promise<void> {
+    private async fetchWithFallbackStrategyToFile(parsedPrompt: ParsedPrompt, context: vscode.ExtensionContext): Promise<string> {
         const rawUrl = this.buildRawFileUrl(parsedPrompt);
         let headers = {};
         
@@ -183,10 +185,12 @@ export class PromptFetcher {
             const content = await this.fetchViaHttp(rawUrl, headers);
             this.outputChannel.appendLine('promptu: Fetched prompt using direct HTTP access');
             await this.storePromptInStorage(content, parsedPrompt.name, context);
+            return content;
         } catch (error) {
             // Final fallback: Use git clone and move file directly
-            await this.fetchViaGitToFile(parsedPrompt, context);
+            const content = await this.fetchViaGitToFile(parsedPrompt, context);
             this.outputChannel.appendLine('promptu: Fetched prompt using git clone fallback');
+            return content;
         }
     }
 
@@ -234,9 +238,9 @@ export class PromptFetcher {
      * Fetches a prompt file via git clone and moves it directly to the storage location
      * @param parsedPrompt - The parsed prompt information containing repository details
      * @param context - The VS Code extension context
-     * @returns Promise that resolves when the prompt is fetched and moved to storage
+     * @returns Promise that resolves to the fetched prompt content
      */
-    private async fetchViaGitToFile(parsedPrompt: ParsedPrompt, context: vscode.ExtensionContext): Promise<void> {
+    private async fetchViaGitToFile(parsedPrompt: ParsedPrompt, context: vscode.ExtensionContext): Promise<string> {
         const tempDir = path.join(os.tmpdir(), 'promptu-' + Date.now());
         
         try {
@@ -246,16 +250,17 @@ export class PromptFetcher {
             // Clone repository to temp directory
             await this.executeGitCommand(['clone', '--depth', '1', repoUrl, tempDir]);
             
-            // Build source file path and create URI
+            // Build source file path and read content
             const sourceFilePath = path.join(tempDir, parsedPrompt.filePath!);
-            const sourceUri = vscode.Uri.file(sourceFilePath);
+            const content = await fs.promises.readFile(sourceFilePath, 'utf8');
             
-            // Copy prompt file to storage
-            await this.storePromptInStorage(sourceUri, parsedPrompt.name, context);
+            // Store prompt content to storage
+            await this.storePromptInStorage(content, parsedPrompt.name, context);
             
             // Clean up temp directory
             this.cleanupDirectory(tempDir);
             
+            return content;
         } catch (error) {
             // Clean up temp directory on error
             this.cleanupDirectory(tempDir);

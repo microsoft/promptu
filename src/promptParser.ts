@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT license.
 
+import matter from 'gray-matter';
 import { ParsedPrompt, WorkspaceConfig } from './types';
 
 /**
@@ -125,6 +126,29 @@ export function addDefaultExtension(path: string): string {
     const extensions = ['.prompt.md', '.md', '.txt', '.json'];
     const hasExtension = extensions.some(ext => path.endsWith(ext));
     return hasExtension ? path : path + '.prompt.md';
+}
+
+/**
+ * Resolves the slash command name that VS Code will use for a prompt file.
+ * If the prompt content has a YAML frontmatter 'name' field, that name is used;
+ * otherwise falls back to the filename-derived name.
+ * Applies VS Code's sanitization: any characters that aren't Unicode letters,
+ * digits, underscores, hyphens, periods, or colons are replaced with a single dash.
+ * @param content - The raw prompt file content (markdown with optional YAML frontmatter)
+ * @param filenameDerivedName - The fallback name derived from the filename
+ * @returns The sanitized slash command name that VS Code will register
+ */
+export function resolveSlashCommandName(content: string, filenameDerivedName: string): string {
+    let rawName = filenameDerivedName;
+    try {
+        const { data } = matter(content);
+        if (data?.name != null && String(data.name)) {
+            rawName = String(data.name);
+        }
+    } catch {
+        // Malformed frontmatter — fall back to filename-derived name
+    }
+    return rawName.replace(/[^\p{L}\d_\-\.:]+/gu, '-');
 }
 
 /**

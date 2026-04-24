@@ -2,7 +2,7 @@
   "name": "promptu",
   "displayName": "promptu",
   "description": "Create shareable, clickable links that run AI prompts from anywhere directly in VSCode's Github Copilot Chat",
-  "version": "2.0.5",
+  "version": "2.0.6",
   "icon": "promptu.png",
   "publisher": "ms-promptu",
   "engines": {
@@ -98,6 +98,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "gray-matter": "^4.0.3",
     "jsonc-parser": "^3.3.1",
     "node-fetch": "^3.3.0"
   }
