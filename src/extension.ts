@@ -270,11 +270,11 @@ async function executePromptLogic(
                 default:
                     // All other prompt types (file-based) need to be fetched first
                     progress.report({ message: "Fetching prompt..." });
-                    await promptFetcher.fetchPrompt(parsedPrompt, context);
+                    const slashName = await promptFetcher.fetchPrompt(parsedPrompt, context);
                     
-                    // Then execute with Copilot
+                    // Then execute with Copilot using the resolved slash command name
                     progress.report({ message: "Executing prompt..." });
-                    await copilotExecutor.executePrompt(parsedPrompt.name, input);
+                    await copilotExecutor.executePrompt(slashName, input);
                     break;
             }
         });

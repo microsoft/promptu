@@ -2,7 +2,7 @@
 // Licensed under the MIT license.
 
 import * as vscode from 'vscode';
-import { ParsedPrompt, McpServerConfig } from './types';
+import { ParsedPrompt, McpServerConfig, McpConfiguration } from './types';
 
 /**
  * Shows confirmation dialog for prompt execution
@@ -53,6 +53,81 @@ export async function showMcpInstallationConfirmation(server: McpServerConfig, i
     );
     
     return result === action;
+}
+
+/**
+ * Shows confirmation dialog for MCP server config update with three options
+ * @param server - The new MCP server configuration from the prompt link
+ * @param existingConfig - The user's current configuration for this server
+ * @returns 'update' if user wants to update, 'skip' to keep existing, 'suppress' to skip and don't ask again, 'cancel' if dismissed
+ */
+export async function showMcpUpdateConfirmation(
+    server: McpServerConfig,
+    existingConfig: McpConfiguration['servers'][string]
+): Promise<'update' | 'skip' | 'suppress' | 'cancel'> {
+    const details = buildMcpUpdateDetailsMessage(server, existingConfig);
+
+    const result = await vscode.window.showWarningMessage(
+        `promptu: MCP server '${server.name}' may need to be updated for this prompt.`,
+        { detail: details, modal: true },
+        'Update',
+        'Skip',
+        'Skip & Don\'t Ask Again'
+    );
+
+    if (result === 'Update') return 'update';
+    if (result === 'Skip') return 'skip';
+    if (result === 'Skip & Don\'t Ask Again') return 'suppress';
+    return 'cancel';
+}
+
+/**
+ * Builds the detailed message for MCP update confirmation showing current and new configs
+ * @param server - The new MCP server configuration
+ * @param existingConfig - The user's current server configuration
+ * @returns Formatted details message
+ */
+function buildMcpUpdateDetailsMessage(
+    server: McpServerConfig,
+    existingConfig: McpConfiguration['servers'][string]
+): string {
+    const lines: string[] = [];
+
+    // Current configuration
+    lines.push('Current Configuration');
+    lines.push(`Type: ${existingConfig.type}`);
+    if (existingConfig.command) lines.push(`Command: ${existingConfig.command}`);
+    if (existingConfig.args && existingConfig.args.length > 0) lines.push(`Arguments: ${existingConfig.args.join(' ')}`);
+    if (existingConfig.url) lines.push(`URL: ${formatLongPath(existingConfig.url)}`);
+    if (existingConfig.env && Object.keys(existingConfig.env).length > 0) {
+        lines.push('Environment Variables:');
+        Object.entries(existingConfig.env).forEach(([key, value]) => {
+            lines.push(`  ${key}=${value}`);
+        });
+    }
+
+    lines.push('');
+
+    // New configuration
+    lines.push('New Configuration');
+    lines.push(`Type: ${server.type}`);
+    if (server.command) lines.push(`Command: ${server.command}`);
+    if (server.args && server.args.length > 0) lines.push(`Arguments: ${server.args.join(' ')}`);
+    if (server.url) lines.push(`URL: ${formatLongPath(server.url)}`);
+    if (server.env && Object.keys(server.env).length > 0) {
+        lines.push('Environment Variables:');
+        Object.entries(server.env).forEach(([key, value]) => {
+            lines.push(`  ${key}=${value}`);
+        });
+    }
+
+    lines.push('');
+    lines.push('"Update" will install the new configuration.');
+    lines.push('"Skip" will keep your current configuration and continue.');
+    lines.push('');
+    lines.push('⚠️ If you skip, the prompt may not work as expected.');
+
+    return lines.join('\n');
 }
 
 /**

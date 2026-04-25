@@ -22,9 +22,16 @@ suite('McpInstaller Test Suite', () => {
             replace: () => {}
         } as vscode.OutputChannel;
 
+        const stateStore: Record<string, any> = {};
         mockContext = {
-            globalStorageUri: vscode.Uri.file('/test/globalStorage')
-        } as vscode.ExtensionContext;
+            globalStorageUri: vscode.Uri.file('/test/globalStorage'),
+            globalState: {
+                get: (key: string, defaultValue?: any) => stateStore[key] ?? defaultValue,
+                update: async (key: string, value: any) => { stateStore[key] = value; },
+                keys: () => Object.keys(stateStore),
+                setKeysForSync: () => {}
+            }
+        } as unknown as vscode.ExtensionContext;
         
         mcpInstaller = new McpInstaller(mockOutputChannel, mockContext);
     });
@@ -215,6 +222,160 @@ suite('McpInstaller Test Suite', () => {
             ].join('\n');
             const result = parseDotnetToolListOutput(stdout);
             assert.deepStrictEqual(result, { version: '2.0.1', commandName: 'MyExampleTool' });
+        });
+    });
+
+    suite('hasConfigChanged', () => {
+        test('should return false when configs match', () => {
+            const installer = mcpInstaller as any;
+            const existing = { type: 'http', url: 'https://example.com/mcp' };
+            const server = { name: 'test', type: 'http', url: 'https://example.com/mcp' };
+            assert.strictEqual(installer.hasConfigChanged(existing, server), false);
+        });
+
+        test('should return true when URL differs', () => {
+            const installer = mcpInstaller as any;
+            const existing = { type: 'http', url: 'https://old-url.com/mcp' };
+            const server = { name: 'test', type: 'http', url: 'https://new-url.com/mcp' };
+            assert.strictEqual(installer.hasConfigChanged(existing, server), true);
+        });
+
+        test('should return true when type differs', () => {
+            const installer = mcpInstaller as any;
+            const existing = { type: 'http', url: 'https://example.com/mcp' };
+            const server = { name: 'test', type: 'stdio', command: 'my-tool' };
+            assert.strictEqual(installer.hasConfigChanged(existing, server), true);
+        });
+
+        test('should return false when key order differs but values match', () => {
+            const installer = mcpInstaller as any;
+            const existing = { url: 'https://example.com/mcp', type: 'http' };
+            const server = { name: 'test', type: 'http', url: 'https://example.com/mcp' };
+            assert.strictEqual(installer.hasConfigChanged(existing, server), false);
+        });
+
+        test('should return false when falsy fields normalize to same result', () => {
+            const installer = mcpInstaller as any;
+            const existing = { type: 'http', url: 'https://example.com/mcp', command: '' };
+            const server = { name: 'test', type: 'http', url: 'https://example.com/mcp' };
+            assert.strictEqual(installer.hasConfigChanged(existing, server), false);
+        });
+
+        test('should return true when command differs', () => {
+            const installer = mcpInstaller as any;
+            const existing = { type: 'stdio', command: 'old-tool' };
+            const server = { name: 'test', type: 'stdio', command: 'new-tool' };
+            assert.strictEqual(installer.hasConfigChanged(existing, server), true);
+        });
+
+        test('should return true when args differ', () => {
+            const installer = mcpInstaller as any;
+            const existing = { type: 'stdio', command: 'tool', args: ['--old'] };
+            const server = { name: 'test', type: 'stdio', command: 'tool', args: ['--new'] };
+            assert.strictEqual(installer.hasConfigChanged(existing, server), true);
+        });
+
+        test('should return false when both have no optional fields', () => {
+            const installer = mcpInstaller as any;
+            const existing = { type: 'http' };
+            const server = { name: 'test', type: 'http' };
+            assert.strictEqual(installer.hasConfigChanged(existing, server), false);
+        });
+
+        test('should return false when env keys are in different order but values match', () => {
+            const installer = mcpInstaller as any;
+            const existing = { type: 'http', url: 'https://example.com/mcp', env: { B: '2', A: '1' } };
+            const server = { name: 'test', type: 'http', url: 'https://example.com/mcp', env: { A: '1', B: '2' } };
+            assert.strictEqual(installer.hasConfigChanged(existing, server), false);
+        });
+
+        test('should return false when empty env vs no env', () => {
+            const installer = mcpInstaller as any;
+            const existing = { type: 'http', url: 'https://example.com/mcp', env: {} };
+            const server = { name: 'test', type: 'http', url: 'https://example.com/mcp' };
+            assert.strictEqual(installer.hasConfigChanged(existing, server), false);
+        });
+
+        test('should return false when empty args vs no args', () => {
+            const installer = mcpInstaller as any;
+            const existing = { type: 'stdio', command: 'tool', args: [] };
+            const server = { name: 'test', type: 'stdio', command: 'tool' };
+            assert.strictEqual(installer.hasConfigChanged(existing, server), false);
+        });
+
+        test('should return true when env values differ', () => {
+            const installer = mcpInstaller as any;
+            const existing = { type: 'http', url: 'https://example.com/mcp', env: { KEY: 'old' } };
+            const server = { name: 'test', type: 'http', url: 'https://example.com/mcp', env: { KEY: 'new' } };
+            assert.strictEqual(installer.hasConfigChanged(existing, server), true);
+        });
+
+        test('should return false when env value is number vs equivalent string', () => {
+            const installer = mcpInstaller as any;
+            const existing = { type: 'http', url: 'https://example.com/mcp', env: { PORT: 8080 } };
+            const server = { name: 'test', type: 'http', url: 'https://example.com/mcp', env: { PORT: '8080' } };
+            assert.strictEqual(installer.hasConfigChanged(existing, server), false);
+        });
+    });
+
+    suite('Update Suppression', () => {
+        test('should not be suppressed when no suppression stored', () => {
+            const installer = mcpInstaller as any;
+            const server = { name: 'test-server', type: 'http', url: 'https://example.com/mcp' };
+            assert.strictEqual(installer.isUpdateSuppressed(server), false);
+        });
+
+        test('should be suppressed after storing suppression for same config', async () => {
+            const installer = mcpInstaller as any;
+            const server = { name: 'test-server', type: 'http', url: 'https://example.com/mcp' };
+            await installer.suppressUpdate(server);
+            assert.strictEqual(installer.isUpdateSuppressed(server), true);
+        });
+
+        test('should not be suppressed when incoming config differs from suppressed config', async () => {
+            const installer = mcpInstaller as any;
+            const server1 = { name: 'test-server', type: 'http', url: 'https://old-url.com/mcp' };
+            await installer.suppressUpdate(server1);
+
+            const server2 = { name: 'test-server', type: 'http', url: 'https://new-url.com/mcp' };
+            assert.strictEqual(installer.isUpdateSuppressed(server2), false);
+        });
+
+        test('should clear suppression for a server', async () => {
+            const installer = mcpInstaller as any;
+            const server = { name: 'test-server', type: 'http', url: 'https://example.com/mcp' };
+            await installer.suppressUpdate(server);
+            assert.strictEqual(installer.isUpdateSuppressed(server), true);
+
+            await installer.clearUpdateSuppression('test-server');
+            assert.strictEqual(installer.isUpdateSuppressed(server), false);
+        });
+
+        test('should not affect other servers when clearing suppression', async () => {
+            const installer = mcpInstaller as any;
+            const server1 = { name: 'server-a', type: 'http', url: 'https://a.com/mcp' };
+            const server2 = { name: 'server-b', type: 'http', url: 'https://b.com/mcp' };
+            await installer.suppressUpdate(server1);
+            await installer.suppressUpdate(server2);
+
+            await installer.clearUpdateSuppression('server-a');
+            assert.strictEqual(installer.isUpdateSuppressed(server1), false);
+            assert.strictEqual(installer.isUpdateSuppressed(server2), true);
+        });
+
+        test('should suppress based on incoming config only, not existing config', async () => {
+            const installer = mcpInstaller as any;
+            const server = { name: 'test-server', type: 'http', url: 'https://new-url.com/mcp' };
+            await installer.suppressUpdate(server);
+
+            // Same incoming config should still be suppressed regardless of what the existing config is
+            assert.strictEqual(installer.isUpdateSuppressed(server), true);
+        });
+
+        test('should handle clearing non-existent suppression gracefully', async () => {
+            const installer = mcpInstaller as any;
+            // Should not throw
+            await installer.clearUpdateSuppression('non-existent-server');
         });
     });
 });

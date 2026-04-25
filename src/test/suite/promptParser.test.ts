@@ -258,4 +258,105 @@ suite('promptParser Test Suite', () => {
             }, /Invalid workspace type: invalid:some message. Use 'select' or 'select:message'/);
         });
     });
+
+    suite('resolveSlashCommandName', () => {
+        // Import here since it's added alongside existing exports
+        const { resolveSlashCommandName } = require('../../promptParser');
+
+        test('should use frontmatter name when present', () => {
+            const content = '---\nname: My-Custom-Name\n---\nPrompt body';
+            const result = resolveSlashCommandName(content, 'fallback-name');
+            assert.strictEqual(result, 'My-Custom-Name');
+        });
+
+        test('should replace spaces with dashes in frontmatter name', () => {
+            const content = '---\nname: "My Custom Prompt Analyzer"\n---\nPrompt body';
+            const result = resolveSlashCommandName(content, 'fallback-name');
+            assert.strictEqual(result, 'My-Custom-Prompt-Analyzer');
+        });
+
+        test('should preserve case in frontmatter name', () => {
+            const content = '---\nname: MyPrompt\n---\nBody';
+            const result = resolveSlashCommandName(content, 'myprompt');
+            assert.strictEqual(result, 'MyPrompt');
+        });
+
+        test('should fall back to filename-derived name when no frontmatter', () => {
+            const content = 'Just a prompt body with no frontmatter';
+            const result = resolveSlashCommandName(content, 'my-prompt');
+            assert.strictEqual(result, 'my-prompt');
+        });
+
+        test('should fall back to filename-derived name when no name field', () => {
+            const content = '---\ndescription: Some description\n---\nPrompt body';
+            const result = resolveSlashCommandName(content, 'my-prompt');
+            assert.strictEqual(result, 'my-prompt');
+        });
+
+        test('should fall back to filename-derived name when name is empty', () => {
+            const content = '---\nname: ""\n---\nPrompt body';
+            const result = resolveSlashCommandName(content, 'fallback-name');
+            assert.strictEqual(result, 'fallback-name');
+        });
+
+        test('should replace special characters with dashes', () => {
+            const content = '---\nname: "My Prompt @ v2.0!"\n---\nBody';
+            const result = resolveSlashCommandName(content, 'fallback');
+            assert.strictEqual(result, 'My-Prompt-v2.0-');
+        });
+
+        test('should handle single-quoted name', () => {
+            const content = "---\nname: 'Single Quoted Name'\n---\nBody";
+            const result = resolveSlashCommandName(content, 'fallback');
+            assert.strictEqual(result, 'Single-Quoted-Name');
+        });
+
+        test('should handle unquoted name', () => {
+            const content = '---\nname: unquoted-name\n---\nBody';
+            const result = resolveSlashCommandName(content, 'fallback');
+            assert.strictEqual(result, 'unquoted-name');
+        });
+
+        test('should allow periods and underscores in name', () => {
+            const content = '---\nname: my_prompt.v2\n---\nBody';
+            const result = resolveSlashCommandName(content, 'fallback');
+            assert.strictEqual(result, 'my_prompt.v2');
+        });
+
+        test('should sanitize filename-derived fallback too', () => {
+            const content = 'No frontmatter';
+            const result = resolveSlashCommandName(content, 'has spaces in name');
+            assert.strictEqual(result, 'has-spaces-in-name');
+        });
+
+        test('should handle frontmatter with other fields alongside name', () => {
+            const content = '---\ndescription: A helpful prompt\nname: Code Review Helper\nmode: agent\n---\nBody';
+            const result = resolveSlashCommandName(content, 'fallback');
+            assert.strictEqual(result, 'Code-Review-Helper');
+        });
+
+        test('should handle CRLF line endings', () => {
+            const content = '---\r\nname: CRLF Test\r\n---\r\nBody';
+            const result = resolveSlashCommandName(content, 'fallback');
+            assert.strictEqual(result, 'CRLF-Test');
+        });
+
+        test('should coerce numeric name to string', () => {
+            const content = '---\nname: 123\n---\nBody';
+            const result = resolveSlashCommandName(content, 'fallback');
+            assert.strictEqual(result, '123');
+        });
+
+        test('should coerce boolean name to string', () => {
+            const content = '---\nname: true\n---\nBody';
+            const result = resolveSlashCommandName(content, 'fallback');
+            assert.strictEqual(result, 'true');
+        });
+
+        test('should fall back to filename on malformed YAML', () => {
+            const content = '---\nname: [unclosed\ndescription: broken\n---\nBody';
+            const result = resolveSlashCommandName(content, 'fallback-name');
+            assert.strictEqual(result, 'fallback-name');
+        });
+    });
 });
