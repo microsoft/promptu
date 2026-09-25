@@ -51,5 +51,75 @@ suite('CopilotExecutor Test Suite', () => {
             const chatCommand = config.get<string>('copilotChatCommand');
             assert.ok(chatCommand, 'Should have a default chat command configured');
         });
+
+        test('should force Local chat by default', () => {
+            const config = vscode.workspace.getConfiguration('promptu');
+            assert.strictEqual(config.get<boolean>('forceLocalChat'), true, 'promptu.forceLocalChat should default to true');
+        });
+    });
+
+    suite('New Chat Session', () => {
+        const newLocalChatCommand = 'workbench.action.chat.newLocalChat';
+        const newChatCommand = 'workbench.action.chat.newChat';
+
+        let originalExecuteCommand: typeof vscode.commands.executeCommand;
+        let executedCommands: string[];
+        let chatCommand: string | undefined;
+
+        /**
+         * Replaces vscode.commands.executeCommand with a stub that records the command IDs
+         * @param failingCommands - Command IDs that throw, as if VS Code does not provide them
+         */
+        function stubExecuteCommand(failingCommands: string[] = []): void {
+            (vscode.commands as any).executeCommand = async (command: string) => {
+                executedCommands.push(command);
+                if (failingCommands.includes(command)) {
+                    throw new Error(`command '${command}' not found`);
+                }
+                return undefined;
+            };
+        }
+
+        setup(() => {
+            originalExecuteCommand = vscode.commands.executeCommand;
+            executedCommands = [];
+            chatCommand = vscode.workspace.getConfiguration('promptu').get<string>('copilotChatCommand');
+        });
+
+        teardown(async () => {
+            (vscode.commands as any).executeCommand = originalExecuteCommand;
+            await vscode.workspace.getConfiguration('promptu').update('forceLocalChat', undefined, vscode.ConfigurationTarget.Global);
+        });
+
+        test('should open a new Local chat before sending the prompt', async () => {
+            stubExecuteCommand();
+            await executor.executeCopilotChatCommand('/test-prompt');
+            assert.deepStrictEqual(executedCommands, [newLocalChatCommand, chatCommand]);
+        });
+
+        test('should open a regular new chat when a new Local chat is not available', async () => {
+            stubExecuteCommand([newLocalChatCommand]);
+            await executor.executeCopilotChatCommand('/test-prompt');
+            assert.deepStrictEqual(executedCommands, [newLocalChatCommand, newChatCommand, chatCommand]);
+        });
+
+        test('should open a regular new chat when forceLocalChat is false', async () => {
+            await vscode.workspace.getConfiguration('promptu').update('forceLocalChat', false, vscode.ConfigurationTarget.Global);
+            stubExecuteCommand();
+            await executor.executeCopilotChatCommand('/test-prompt');
+            assert.deepStrictEqual(executedCommands, [newChatCommand, chatCommand]);
+        });
+
+        test('should send the prompt when no new chat can be opened', async () => {
+            stubExecuteCommand([newLocalChatCommand, newChatCommand]);
+            await executor.executeCopilotChatCommand('/test-prompt');
+            assert.deepStrictEqual(executedCommands, [newLocalChatCommand, newChatCommand, chatCommand]);
+        });
+
+        test('should find the new chat commands in VS Code', async () => {
+            const commands = await vscode.commands.getCommands(true);
+            assert.ok(commands.includes(newLocalChatCommand), `VS Code should provide '${newLocalChatCommand}'`);
+            assert.ok(commands.includes(newChatCommand), `VS Code should provide '${newChatCommand}'`);
+        });
     });
 });

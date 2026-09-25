@@ -2,7 +2,7 @@
   "name": "promptu",
   "displayName": "promptu",
   "description": "Create shareable, clickable links that run AI prompts from anywhere directly in VSCode's Github Copilot Chat",
-  "version": "2.0.7",
+  "version": "2.0.8",
   "icon": "promptu.png",
   "publisher": "ms-promptu",
   "engines": {
@@ -67,6 +67,11 @@
           "type": "string",
           "default": "workbench.action.chat.openagent",
           "description": "The Copilot Chat command to execute. This can be updated to use a different command if desired."
+        },
+        "promptu.forceLocalChat": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run prompts in a new Local chat, even when another session target (for example Copilot, Claude, or Cloud) is selected. Prompt files and the MCP servers configured in VS Code only work with the Local agent. Set to false to use the default session target of VS Code."
         }
       }
     }
