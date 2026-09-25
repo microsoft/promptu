@@ -10,6 +10,7 @@ import { McpClient } from './mcpClient';
 import { WorkspaceSelector } from './workspaceSelector';
 import { showPromptConfirmation } from './userDialogs';
 import { McpServerConfig } from './types';
+import { ensureMcpServersStarted } from './mcpStartup';
 
 // Create a global output channel for the extension
 const outputChannel = vscode.window.createOutputChannel('promptu');
@@ -246,6 +247,10 @@ async function executePromptLogic(
                 } catch (error) {
                     throw new Error(`MCP setup failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
                 }
+
+                // Start MCP servers and wait for tools to be registered
+                progress.report({ message: "Starting MCP servers..." });
+                await ensureMcpServersStarted(mcpServers, outputChannel);
             }
             
             // Handle different prompt types
