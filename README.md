@@ -62,6 +62,12 @@ Or use platform-specific shortcuts
 - **Windows**: `Win+R` → paste URI → Enter
 - **Mac**: `Cmd+Space` → paste URI → Enter
 
+## Local Chat
+
+promptu runs each prompt in a new **Local** chat, even when Copilot Chat is set to another session target, for example **Copilot**, **Claude**, or **Cloud**. Prompt files and the MCP servers configured in VS Code only work with the Local agent. For more information, see [Choose and use an agent harness](https://code.visualstudio.com/docs/agents/run/agent-harnesses).
+
+To use the default session target of VS Code instead, set `promptu.forceLocalChat` to `false`.
+
 ## Authentication
 If prompt is publicly available, no auth needed.
 
@@ -69,7 +75,7 @@ If not, uses MSAL authentication for Azure DevOps, or git authentication. Works 
 
 ## Requirements
 
-- **VSCode**: 1.103.0 or higher
+- **VSCode**: 1.109.0 or higher
 - **GitHub Copilot Chat**: Extension must be installed and configured
 
 For private sources:

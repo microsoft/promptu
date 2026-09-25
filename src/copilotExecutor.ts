@@ -18,6 +18,11 @@ export class CopilotExecutor {
         'workbench.action.chat.open',  // default chat command
     ];
 
+    // Opens a new chat in the Local agent, whatever session target is selected (VS Code 1.109+)
+    private static readonly newLocalChatCommand = 'workbench.action.chat.newLocalChat';
+    // Opens a new chat that keeps the current or remembered session target (for example Copilot or Cloud)
+    private static readonly newChatCommand = 'workbench.action.chat.newChat';
+
     private chatCommand: string;
     private outputChannel: vscode.OutputChannel;
 
@@ -53,13 +58,7 @@ export class CopilotExecutor {
      */
     public async executeCopilotChatCommand(content: string): Promise<void> {
         // Try to open a new chat first, before attempting any commands
-        try {
-            await vscode.commands.executeCommand('workbench.action.chat.newChat');
-        } catch (newChatError) {
-            // If new chat command fails, continue anyway
-            this.outputChannel.appendLine('promptu: Could not open new chat: ' + newChatError);
-            console.warn('promptu: Could not open new chat:', newChatError);
-        }
+        await this.openNewChat();
 
         let lastError: Error | undefined;
 
@@ -100,6 +99,34 @@ export class CopilotExecutor {
         throw new Error(`Failed to execute Copilot Chat command. Available commands may have changed. Make sure GitHub Copilot Chat is installed and enabled. 
             Tried variants: ${triedCommands.join(', ')}. You can also run 'promptu: Discover Chat Commands' from the Command Palette to change the chat command used. 
             Last error: ${lastError?.message || 'Unknown error'}`);
+    }
+
+    /**
+     * Opens a new chat for the prompt
+     * @description
+     * Prompt files and the MCP servers configured in VS Code only work with the Local agent.
+     * By default, opens a new Local chat, even when another session target (for example Copilot,
+     * Claude or Cloud) is selected. Uses a regular new chat when the 'promptu.forceLocalChat' setting
+     * is false, or when the VS Code version does not support new Local chats.
+     * If no new chat can be opened, the prompt is sent to the current chat.
+     * @returns Promise that resolves when the new chat is opened, or when all attempts fail
+     */
+    private async openNewChat(): Promise<void> {
+        const config = vscode.workspace.getConfiguration('promptu');
+        const newChatCommands = config.get<boolean>('forceLocalChat', true)
+            ? [CopilotExecutor.newLocalChatCommand, CopilotExecutor.newChatCommand]
+            : [CopilotExecutor.newChatCommand];
+
+        for (const command of newChatCommands) {
+            try {
+                await vscode.commands.executeCommand(command);
+                return;
+            } catch (newChatError) {
+                // Try the next command. If all commands fail, continue anyway
+                this.outputChannel.appendLine(`promptu: Could not open new chat with '${command}': ${newChatError}`);
+                console.warn(`promptu: Could not open new chat with '${command}':`, newChatError);
+            }
+        }
     }
 
     /**
